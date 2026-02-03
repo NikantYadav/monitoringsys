@@ -1,0 +1,14 @@
+{
+  "server_url": "http://localhost:5000/api/metrics",
+  "vm_id": "vm-001-local",
+  "hostname": "ubuntu-dev",
+  "broadcast_interval": 0.5,
+  "storage_interval": 5,
+  "services_to_monitor": [
+    "nginx",
+    "mysql",
+    "mongodb",
+    "docker",
+    "ssh"
+  ]
+}
