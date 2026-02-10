@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const mongoose = require('mongoose');
+const { pool, initializeDatabase } = require('./db');
 const Metric = require('./models/Metric');
 
 const app = express();
@@ -12,53 +12,26 @@ const io = require('socket.io')(http, {
 
 const PORT = process.env.PORT || 5000;
 
-// Connect to MongoDB Atlas with retry logic
-const connectToMongoDB = async () => {
+// Initialize TimescaleDB
+(async () => {
     try {
-        await mongoose.connect(process.env.MONGO_URI);
-        console.log('✓ Connected to MongoDB Atlas');
-        console.log('Database: monitoring_sys');
+        await initializeDatabase();
+        console.log('✓ TimescaleDB ready');
+        console.log('Database:', process.env.PGDATABASE || 'monitoring_sys');
     } catch (err) {
-        console.error('✗ MongoDB Atlas connection error:', err.message);
-        
-        // Specific error handling
-        if (err.message.includes('bad auth') || err.message.includes('authentication failed')) {
-            console.error('💡 Authentication Issue - Please check:');
-            console.error('   1. Username and password are correct');
-            console.error('   2. User has proper database permissions');
-            console.error('   3. Password doesn\'t contain special characters (or is URL encoded)');
-            console.error('   4. Using database user credentials (not Atlas account credentials)');
-        } else if (err.message.includes('network') || err.message.includes('ENOTFOUND')) {
-            console.error('💡 Network Issue - Please check:');
-            console.error('   1. Internet connection');
-            console.error('   2. IP address is whitelisted in Atlas Network Access');
-            console.error('   3. Cluster URL is correct');
-        }
-        
-        console.error('Retrying connection in 5 seconds...');
-        setTimeout(connectToMongoDB, 5000);
+        console.error('✗ TimescaleDB initialization error:', err.message);
+        console.error('💡 Please check:');
+        console.error('   1. PostgreSQL/TimescaleDB is running');
+        console.error('   2. Database credentials in .env are correct');
+        console.error('   3. Database exists or user has CREATE privileges');
+        process.exit(1);
     }
-};
-
-connectToMongoDB();
-
-// MongoDB connection event handlers
-mongoose.connection.on('connected', () => {
-    console.log('✓ Mongoose connected to MongoDB Atlas');
-});
-
-mongoose.connection.on('error', (err) => {
-    console.error('✗ Mongoose connection error:', err.message);
-});
-
-mongoose.connection.on('disconnected', () => {
-    console.log('⚠ Mongoose disconnected from MongoDB Atlas');
-});
+})();
 
 // Handle process termination
 process.on('SIGINT', async () => {
-    await mongoose.connection.close();
-    console.log('MongoDB Atlas connection closed through app termination');
+    await pool.end();
+    console.log('TimescaleDB connection pool closed');
     process.exit(0);
 });
 
@@ -120,11 +93,74 @@ app.get('/api/vms', (req, res) => {
 app.get('/api/metrics/:vmId', async (req, res) => {
     try {
         const { vmId } = req.params;
-        const { period = '1h', limit = 100 } = req.query;
+        const { period, limit = 100, startDate, endDate } = req.query;
         
+        let startTime;
+        
+        // Check if custom date range is provided
+        if (startDate && endDate) {
+            startTime = new Date(startDate);
+            const endTime = new Date(endDate);
+            
+            console.log(`📊 Custom range request: vmId=${vmId}, from=${startTime.toISOString()} to=${endTime.toISOString()}`);
+            
+            // Query with custom date range
+            const query = `
+                SELECT 
+                    id,
+                    vm_id as "vmId",
+                    hostname,
+                    timestamp,
+                    cpu_usage,
+                    cpu_cores,
+                    memory_total,
+                    memory_used,
+                    memory_percent,
+                    disk_total,
+                    disk_used,
+                    disk_percent,
+                    processes,
+                    services
+                FROM metrics
+                WHERE vm_id = $1 AND timestamp >= $2 AND timestamp <= $3
+                ORDER BY timestamp DESC
+                LIMIT $4;
+            `;
+            
+            const result = await pool.query(query, [vmId, startTime, endTime, parseInt(limit)]);
+            
+            // Transform to match expected format
+            const metrics = result.rows.map(row => ({
+                vmId: row.vmId,
+                hostname: row.hostname,
+                timestamp: row.timestamp,
+                cpu: {
+                    usage: row.cpu_usage,
+                    cores: row.cpu_cores
+                },
+                memory: {
+                    total: row.memory_total,
+                    used: row.memory_used,
+                    percent: row.memory_percent
+                },
+                disk: {
+                    total: row.disk_total,
+                    used: row.disk_used,
+                    percent: row.disk_percent
+                },
+                processes: row.processes,
+                services: row.services
+            }));
+            
+            console.log(`✅ Found ${metrics.length} records for custom range`);
+            res.json(metrics.reverse()); // Return chronological order
+            return;
+        }
+        
+        // Standard period-based query
         console.log(`📊 Historical data request: vmId=${vmId}, period=${period}, limit=${limit}`);
         
-        let startTime = new Date();
+        startTime = new Date();
         switch (period) {
             case '1h': startTime.setHours(startTime.getHours() - 1); break;
             case '6h': startTime.setHours(startTime.getHours() - 6); break;
@@ -136,23 +172,9 @@ app.get('/api/metrics/:vmId', async (req, res) => {
 
         console.log(`📅 Searching for metrics after: ${startTime.toISOString()}`);
 
-        const metrics = await Metric.find({
-            vmId,
-            timestamp: { $gte: startTime }
-        })
-        .sort({ timestamp: -1 })
-        .limit(parseInt(limit))
-        .select('timestamp cpu memory disk services');
+        const metrics = await Metric.find(vmId, startTime, parseInt(limit));
 
         console.log(`✅ Found ${metrics.length} historical records for ${vmId}`);
-        
-        if (metrics.length > 0) {
-            console.log(`📈 Sample record:`, {
-                timestamp: metrics[0].timestamp,
-                cpu: metrics[0].cpu?.usage,
-                memory: metrics[0].memory?.percent
-            });
-        }
 
         res.json(metrics.reverse()); // Return chronological order
     } catch (error) {
@@ -175,10 +197,7 @@ app.delete('/api/metrics/:vmId', async (req, res) => {
             default: cutoffDate.setDate(cutoffDate.getDate() - 30);
         }
 
-        const result = await Metric.deleteMany({
-            vmId,
-            timestamp: { $lt: cutoffDate }
-        });
+        const result = await Metric.deleteMany(vmId, cutoffDate);
 
         res.json({ 
             success: true, 
@@ -194,24 +213,8 @@ app.delete('/api/metrics/:vmId', async (req, res) => {
 // 5. Get Storage Statistics
 app.get('/api/storage-stats', async (req, res) => {
     try {
-        const stats = await Metric.aggregate([
-            {
-                $group: {
-                    _id: '$vmId',
-                    totalRecords: { $sum: 1 },
-                    oldestRecord: { $min: '$timestamp' },
-                    newestRecord: { $max: '$timestamp' },
-                    hostname: { $first: '$hostname' }
-                }
-            }
-        ]);
-
-        const totalRecords = await Metric.countDocuments();
-        
-        res.json({
-            totalRecords,
-            vmStats: stats
-        });
+        const stats = await Metric.getStats();
+        res.json(stats);
     } catch (error) {
         console.error('Error fetching storage stats:', error);
         res.status(500).json({ error: 'Failed to fetch storage stats' });
@@ -285,20 +288,8 @@ io.on('connection', (socket) => {
         try {
             console.log(`Received metrics from agent ${data.vmId}`);
             
-            // Check if MongoDB is connected
-            if (mongoose.connection.readyState !== 1) {
-                console.error('✗ MongoDB Atlas not connected, skipping storage');
-                return;
-            }
-            
-            // Save to MongoDB Atlas
-            const metricData = {
-                ...data,
-                timestamp: new Date(data.timestamp) // Convert milliseconds to Date object
-            };
-            
-            const metric = new Metric(metricData);
-            await metric.save();
+            // Save to TimescaleDB
+            await Metric.save(data);
             
             // Log with IST time for better debugging
             const istTime = new Date(data.timestamp).toLocaleString('en-IN', {
@@ -316,15 +307,15 @@ io.on('connection', (socket) => {
             // Optionally forward to dashboard clients for real-time display
             socket.broadcast.emit('metrics:update', data);
         } catch (error) {
-            console.error('✗ Error saving to MongoDB Atlas:', error.message);
+            console.error('✗ Error saving to TimescaleDB:', error.message);
             
-            // MongoDB Atlas specific error handling
-            if (error.message.includes('authentication failed')) {
-                console.error('💡 Hint: Check MongoDB Atlas username/password');
-            } else if (error.message.includes('network') || error.message.includes('timeout')) {
-                console.error('💡 Hint: Check internet connection to MongoDB Atlas');
-            } else if (error.message.includes('validation')) {
-                console.error('💡 Hint: Data validation error - check metric data format');
+            // TimescaleDB specific error handling
+            if (error.message.includes('authentication failed') || error.message.includes('password')) {
+                console.error('💡 Hint: Check TimescaleDB username/password in .env');
+            } else if (error.message.includes('ECONNREFUSED') || error.message.includes('connect')) {
+                console.error('💡 Hint: Check if PostgreSQL/TimescaleDB is running');
+            } else if (error.message.includes('relation') || error.message.includes('does not exist')) {
+                console.error('💡 Hint: Database schema not initialized properly');
             }
         }
     });
@@ -341,6 +332,61 @@ io.on('connection', (socket) => {
     socket.on('error', (error) => {
         console.error('WebSocket error:', error);
     });
+});
+
+// 8. Get All VMs from Database (for persistent VM list)
+app.get('/api/vms/all', async (req, res) => {
+    try {
+        // Get unique VMs from database
+        const query = `
+            SELECT DISTINCT ON (vm_id)
+                vm_id,
+                hostname,
+                timestamp
+            FROM metrics
+            ORDER BY vm_id, timestamp DESC;
+        `;
+        
+        const result = await pool.query(query);
+        
+        const dbVms = result.rows.map(row => ({
+            _id: row.vm_id,
+            hostname: row.hostname,
+            lastSeen: row.timestamp,
+            source: 'database'
+        }));
+        
+        // Merge with registry data
+        const allVms = [...dbVms];
+        
+        // Add registry VMs that might not be in database yet
+        Object.values(registry).forEach(agent => {
+            if (!allVms.find(vm => vm._id === agent.vmId)) {
+                allVms.push({
+                    _id: agent.vmId,
+                    hostname: agent.hostname,
+                    lastSeen: new Date(agent.lastSeen),
+                    source: 'registry'
+                });
+            }
+        });
+        
+        // Add status from registry
+        const vmsWithStatus = allVms.map(vm => {
+            const registryAgent = registry[vm._id];
+            return {
+                ...vm,
+                ip: registryAgent?.ip || 'http://localhost',
+                port: registryAgent?.port || 5001,
+                status: registryAgent && (Date.now() - registryAgent.lastSeen) < 40000 ? 'online' : 'offline'
+            };
+        });
+        
+        res.json(vmsWithStatus);
+    } catch (error) {
+        console.error('Error fetching all VMs:', error);
+        res.status(500).json({ error: 'Failed to fetch VMs' });
+    }
 });
 
 http.listen(PORT, () => console.log(`Discovery Server running on port ${PORT}`));

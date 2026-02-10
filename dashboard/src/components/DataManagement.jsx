@@ -1,22 +1,39 @@
 import React, { useState, useEffect } from 'react';
-import { Database, Trash2, BarChart3, AlertCircle } from 'lucide-react';
+import { Database, Trash2, BarChart3, AlertCircle, RefreshCw } from 'lucide-react';
 
 const DataManagement = ({ vmId, hostname }) => {
     const [storageStats, setStorageStats] = useState(null);
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState('');
+    const [isRefreshing, setIsRefreshing] = useState(false);
+    const refreshInterval = 30; // Fixed 30 seconds
 
     useEffect(() => {
         fetchStorageStats();
     }, []);
 
-    const fetchStorageStats = async () => {
+    // Auto-refresh effect (always enabled)
+    useEffect(() => {
+        const interval = setInterval(() => {
+            fetchStorageStats(true); // Background refresh
+        }, refreshInterval * 1000);
+
+        return () => clearInterval(interval);
+    }, []);
+
+    const fetchStorageStats = async (isBackgroundRefresh = false) => {
+        if (isBackgroundRefresh) {
+            setIsRefreshing(true);
+        }
+        
         try {
             const response = await fetch('http://localhost:5000/api/storage-stats');
             const data = await response.json();
             setStorageStats(data);
         } catch (error) {
             console.error('Error fetching storage stats:', error);
+        } finally {
+            setIsRefreshing(false);
         }
     };
 
@@ -71,10 +88,26 @@ const DataManagement = ({ vmId, hostname }) => {
 
     return (
         <div className="card">
-            <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1.5rem' }}>
-                <Database size={20} />
-                Data Management - {hostname}
-            </h3>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
+                <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0 }}>
+                    <Database size={20} />
+                    Data Management - {hostname}
+                </h3>
+
+                {/* Refresh indicator */}
+                {isRefreshing && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                        <RefreshCw 
+                            size={14} 
+                            style={{ 
+                                color: 'var(--success)',
+                                animation: 'spin 1s linear infinite'
+                            }} 
+                        />
+                        Updating...
+                    </div>
+                )}
+            </div>
 
             {storageStats && (
                 <div style={{ marginBottom: '2rem' }}>

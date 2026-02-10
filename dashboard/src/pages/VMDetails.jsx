@@ -33,6 +33,7 @@ const VMDetails = () => {
     const { vmId } = useParams();
     const location = useLocation();
     const [agentUrl, setAgentUrl] = useState(location.state?.agentUrl || null);
+    const [vmInfo, setVmInfo] = useState(null); // Store VM info from discovery
 
     const [metrics, setMetrics] = useState([]);
     const [latest, setLatest] = useState(null);
@@ -40,17 +41,18 @@ const VMDetails = () => {
     const [connectionStatus, setConnectionStatus] = useState('disconnected');
     const socketRef = useRef(null);
 
-    // 1. If agentUrl is missing, fetch it from Discovery Server
+    // 1. Fetch VM info from Discovery Server
     useEffect(() => {
-        if (agentUrl) return;
-
         const fetchDiscovery = async () => {
             try {
                 const res = await fetch('http://localhost:5000/api/vms');
                 const agents = await res.json();
                 const target = agents.find(a => a._id === vmId);
                 if (target) {
-                    setAgentUrl(`${target.ip}:${target.port}`);
+                    setVmInfo(target);
+                    if (!agentUrl) {
+                        setAgentUrl(`${target.ip}:${target.port}`);
+                    }
                 } else {
                     console.error("Agent not found in registry");
                 }
@@ -58,12 +60,16 @@ const VMDetails = () => {
                 console.error("Failed to discover agent", e);
             }
         };
+        
         fetchDiscovery();
+        // Poll for status updates
+        const interval = setInterval(fetchDiscovery, 5000);
+        return () => clearInterval(interval);
     }, [vmId, agentUrl]);
 
-    // 2. Connect when agentUrl is available
+    // 2. Connect when agentUrl is available and VM is online
     useEffect(() => {
-        if (!agentUrl) return;
+        if (!agentUrl || vmInfo?.status === 'offline') return;
 
         console.log(`VMDetails connecting to ${agentUrl}`);
         const socket = io(agentUrl);
@@ -96,10 +102,12 @@ const VMDetails = () => {
         return () => {
             socket.disconnect();
         };
-    }, [agentUrl]);
+    }, [agentUrl, vmInfo?.status]);
 
-    if (!agentUrl) return <div className="container">Error: Unknown Agent URL</div>;
-    if (!latest) return <div className="container">Connecting to Agent...</div>;
+    if (!agentUrl || !vmInfo) return <div className="container">Loading VM information...</div>;
+
+    const isOffline = vmInfo.status === 'offline';
+    const displayHostname = latest?.hostname || vmInfo.hostname || vmId;
 
     // Chart Data with IST timestamps
     const labels = metrics.map(m => 
@@ -162,13 +170,13 @@ const VMDetails = () => {
 
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '2rem' }}>
                 <div>
-                    <h1>{latest.hostname}</h1>
-                    <p style={{ color: 'var(--text-secondary)' }}>ID: {latest.vmId}</p>
+                    <h1>{displayHostname}</h1>
+                    <p style={{ color: 'var(--text-secondary)' }}>ID: {vmId}</p>
                 </div>
                 <ConnectionStatus 
                     agentUrl={agentUrl} 
                     vmId={vmId}
-                    agentStatus={connectionStatus}
+                    agentStatus={isOffline ? 'offline' : connectionStatus}
                 />
             </div>
 
@@ -230,6 +238,111 @@ const VMDetails = () => {
             {/* Tab Content */}
             {activeTab === 'realtime' && (
                 <>
+                    {isOffline ? (
+                        <div className="card" style={{ textAlign: 'center', padding: '4rem 2rem' }}>
+                            <Activity size={64} style={{ color: 'var(--danger)', margin: '0 auto 1rem' }} />
+                            <h2 style={{ color: 'var(--danger)', marginBottom: '1rem' }}>Agent Offline</h2>
+                            <p style={{ color: 'var(--text-secondary)', fontSize: '1.1rem' }}>
+                                This VM is currently offline. Real-time monitoring is unavailable.
+                            </p>
+                            <p style={{ color: 'var(--text-secondary)', marginTop: '1rem' }}>
+                                You can still view historical data and manage stored metrics using the tabs above.
+                            </p>
+                        </div>
+                    ) : !latest ? (
+                        <div className="card" style={{ textAlign: 'center', padding: '4rem 2rem' }}>
+                            <Activity size={64} style={{ color: 'var(--accent)', margin: '0 auto 1rem', animation: 'spin 2s linear infinite' }} />
+                            <h2 style={{ marginBottom: '1rem' }}>Connecting to Agent...</h2>
+                            <p style={{ color: 'var(--text-secondary)' }}>
+                                Establishing connection to receive real-time metrics.
+                            </p>
+                        </div>
+                    ) : (
+                        <>
+                    {/* System Stats Overview */}
+                    <div style={{ 
+                        display: 'grid', 
+                        gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', 
+                        gap: '1rem', 
+                        marginBottom: '2rem' 
+                    }}>
+                        {/* CPU Stats Card */}
+                        <div className="card" style={{ backgroundColor: 'rgba(122, 162, 247, 0.1)', border: '1px solid rgba(122, 162, 247, 0.3)' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+                                <Cpu size={24} style={{ color: '#7aa2f7' }} />
+                                <h3 style={{ margin: 0, color: '#7aa2f7' }}>CPU</h3>
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                                <div>
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Cores</div>
+                                    <div style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>{latest.cpu.cores.length}</div>
+                                </div>
+                                <div>
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Usage</div>
+                                    <div style={{ 
+                                        fontSize: '1.5rem', 
+                                        fontWeight: 'bold',
+                                        color: latest.cpu.usage > 80 ? 'var(--danger)' : latest.cpu.usage > 60 ? '#ffc107' : 'var(--success)'
+                                    }}>
+                                        {latest.cpu.usage.toFixed(1)}%
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Memory Stats Card */}
+                        <div className="card" style={{ backgroundColor: 'rgba(187, 154, 247, 0.1)', border: '1px solid rgba(187, 154, 247, 0.3)' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+                                <Activity size={24} style={{ color: '#bb9af7' }} />
+                                <h3 style={{ margin: 0, color: '#bb9af7' }}>Memory</h3>
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                                <div>
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Total</div>
+                                    <div style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>
+                                        {(latest.memory.total / 1024 / 1024 / 1024).toFixed(1)} GB
+                                    </div>
+                                </div>
+                                <div>
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Used</div>
+                                    <div style={{ 
+                                        fontSize: '1.5rem', 
+                                        fontWeight: 'bold',
+                                        color: latest.memory.percent > 80 ? 'var(--danger)' : latest.memory.percent > 60 ? '#ffc107' : 'var(--success)'
+                                    }}>
+                                        {(latest.memory.used / 1024 / 1024 / 1024).toFixed(1)} GB
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Disk Stats Card */}
+                        <div className="card" style={{ backgroundColor: 'rgba(158, 206, 106, 0.1)', border: '1px solid rgba(158, 206, 106, 0.3)' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+                                <Database size={24} style={{ color: '#9ece6a' }} />
+                                <h3 style={{ margin: 0, color: '#9ece6a' }}>Disk</h3>
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                                <div>
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Total</div>
+                                    <div style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>
+                                        {latest.disk ? (latest.disk.total / 1024 / 1024 / 1024).toFixed(1) : '0'} GB
+                                    </div>
+                                </div>
+                                <div>
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Used</div>
+                                    <div style={{ 
+                                        fontSize: '1.5rem', 
+                                        fontWeight: 'bold',
+                                        color: latest.disk?.percent > 80 ? 'var(--danger)' : latest.disk?.percent > 60 ? '#ffc107' : 'var(--success)'
+                                    }}>
+                                        {latest.disk ? (latest.disk.used / 1024 / 1024 / 1024).toFixed(1) : '0'} GB
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: '1.5rem', marginBottom: '2rem' }}>
                         <div className="card">
                             <h3 style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -273,29 +386,76 @@ const VMDetails = () => {
                         <div className="card">
                             <h3>Services Status</h3>
                             <div style={{ marginTop: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                                {latest.services && Object.entries(latest.services).map(([service, status]) => (
-                                    <div key={service} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem', borderRadius: '6px', backgroundColor: 'rgba(0,0,0,0.2)' }}>
-                                        <span style={{ fontWeight: '600' }}>{service}</span>
-                                        <span className={`badge badge-${status === 'running' ? 'success' : status === 'stopped' ? 'danger' : 'warning'}`}>
-                                            {status}
-                                        </span>
-                                    </div>
-                                ))}
+                                {latest.services && Object.entries(latest.services).map(([service, statusData]) => {
+                                    // Handle both old format (string) and new format (object)
+                                    const state = typeof statusData === 'string' ? statusData : statusData.state;
+                                    const checks = typeof statusData === 'object' ? statusData.checks : null;
+                                    
+                                    // Map states to badge styles
+                                    const getBadgeClass = (state) => {
+                                        switch(state) {
+                                            case 'healthy': return 'badge-success';
+                                            case 'degraded': return 'badge-warning';
+                                            case 'down': return 'badge-danger';
+                                            case 'unknown': return 'badge-secondary';
+                                            case 'running': return 'badge-success';
+                                            case 'stopped': return 'badge-danger';
+                                            default: return 'badge-warning';
+                                        }
+                                    };
+                                    
+                                    // Get emoji for state
+                                    const getStateEmoji = (state) => {
+                                        switch(state) {
+                                            case 'healthy': return '🟢';
+                                            case 'degraded': return '🟡';
+                                            case 'down': return '🔴';
+                                            case 'unknown': return '⚪';
+                                            default: return '';
+                                        }
+                                    };
+                                    
+                                    return (
+                                        <div key={service} style={{ padding: '0.5rem', borderRadius: '6px', backgroundColor: 'rgba(0,0,0,0.2)' }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <span style={{ fontWeight: '600' }}>{service}</span>
+                                                <span className={`badge ${getBadgeClass(state)}`}>
+                                                    {getStateEmoji(state)} {state}
+                                                </span>
+                                            </div>
+                                            {checks && (
+                                                <div style={{ marginTop: '0.5rem', paddingLeft: '0.5rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                                                    {Object.entries(checks).map(([checkName, checkResult]) => (
+                                                        <div key={checkName} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem' }}>
+                                                            <span>{checkResult.passed ? '✅' : '❌'}</span>
+                                                            <span style={{ textTransform: 'capitalize' }}>{checkName}:</span>
+                                                            <span style={{ color: checkResult.passed ? '#9ece6a' : '#f7768e' }}>
+                                                                {checkResult.message}
+                                                            </span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
                                 {(!latest.services || Object.keys(latest.services).length === 0) && (
                                     <div style={{ color: 'var(--text-secondary)' }}>No services monitored.</div>
                                 )}
                             </div>
                         </div>
                     </div>
+                    </>
+                    )}
                 </>
             )}
 
             {activeTab === 'historical' && (
-                <HistoricalData vmId={vmId} hostname={latest.hostname} />
+                <HistoricalData vmId={vmId} hostname={displayHostname} />
             )}
 
             {activeTab === 'management' && (
-                <DataManagement vmId={vmId} hostname={latest.hostname} />
+                <DataManagement vmId={vmId} hostname={displayHostname} />
             )}
         </div>
     );

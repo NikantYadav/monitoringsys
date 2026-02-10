@@ -74,64 +74,329 @@ def get_top_processes(n=5):
     processes.sort(key=lambda p: p['cpu_percent'], reverse=True)
     return processes[:n]
 
-def get_service_status():
-    """Get status of monitored services using multiple methods for better compatibility"""
-    status_map = {}
+class ServiceHealthChecker:
+    """
+    Robust service health checker with multi-signal health model.
+    Implements plugin-based checks: HTTP, Command, Socket, Systemd, Port
+    """
     
-    for service in SERVICES_MONITOR:
+    # Health states
+    HEALTHY = "healthy"      # Functional check passes
+    DEGRADED = "degraded"    # Running but failing functional check
+    DOWN = "down"            # Cannot connect at all
+    UNKNOWN = "unknown"      # Insufficient permissions / missing deps
+    
+    def __init__(self, service_configs):
+        self.service_configs = service_configs
+    
+    def check_http(self, config, timeout=3):
+        """HTTP/HTTPS health check - most reliable for web services"""
         try:
-            # Method 1: Try systemctl (most common on modern Linux)
+            import requests
+            url = config.get('url', 'http://127.0.0.1')
+            expected_status = config.get('expected_status', [200, 204])
+            
+            response = requests.get(url, timeout=timeout, allow_redirects=False)
+            
+            if response.status_code in expected_status:
+                return True, f"HTTP {response.status_code}"
+            else:
+                return False, f"HTTP {response.status_code} (expected {expected_status})"
+                
+        except requests.exceptions.Timeout:
+            return False, "HTTP timeout"
+        except requests.exceptions.ConnectionError:
+            return False, "Connection refused"
+        except Exception as e:
+            return False, f"HTTP error: {str(e)[:50]}"
+    
+    def check_tcp_port(self, config, timeout=3):
+        """TCP port connectivity check"""
+        try:
+            host = config.get('host', '127.0.0.1')
+            port = config.get('port')
+            
+            if not port:
+                return False, "No port specified"
+            
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            result = sock.connect_ex((host, port))
+            sock.close()
+            
+            if result == 0:
+                return True, f"Port {port} open"
+            else:
+                return False, f"Port {port} closed"
+                
+        except socket.timeout:
+            return False, "Port check timeout"
+        except Exception as e:
+            return False, f"Port error: {str(e)[:50]}"
+    
+    def check_unix_socket(self, config, timeout=3):
+        """Unix socket check"""
+        try:
+            socket_path = config.get('socket_path')
+            
+            if not socket_path:
+                return False, "No socket path specified"
+            
+            if not os.path.exists(socket_path):
+                return False, f"Socket not found"
+            
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            sock.connect(socket_path)
+            sock.close()
+            
+            return True, "Socket accessible"
+            
+        except socket.timeout:
+            return False, "Socket timeout"
+        except Exception as e:
+            return False, f"Socket error: {str(e)[:50]}"
+    
+    def check_command(self, config, timeout=5):
+        """Execute custom command for health check"""
+        try:
+            cmd = config.get('command')
+            
+            if not cmd:
+                return False, "No command specified"
+            
+            # Support both string and list commands
+            if isinstance(cmd, str):
+                cmd = cmd.split()
+            
             result = subprocess.run(
-                ['systemctl', 'is-active', service], 
-                capture_output=True, 
-                text=True, 
-                timeout=5
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout
             )
             
             if result.returncode == 0:
-                status_map[service] = "running"
+                return True, "Command succeeded"
             else:
-                # Check if service exists but is inactive
-                exists_result = subprocess.run(
-                    ['systemctl', 'list-unit-files', f'{service}.service'], 
-                    capture_output=True, 
-                    text=True, 
-                    timeout=5
-                )
-                if service in exists_result.stdout:
-                    status_map[service] = "stopped"
-                else:
-                    status_map[service] = "not_found"
-                    
+                return False, f"Command failed (exit {result.returncode})"
+                
         except subprocess.TimeoutExpired:
-            status_map[service] = "timeout"
+            return False, "Command timeout"
         except FileNotFoundError:
-            # systemctl not available, try alternative methods
-            try:
-                # Method 2: Try service command (older systems)
-                result = subprocess.run(
-                    ['service', service, 'status'], 
-                    capture_output=True, 
-                    text=True, 
-                    timeout=5
-                )
-                status_map[service] = "running" if result.returncode == 0 else "stopped"
-            except (FileNotFoundError, subprocess.TimeoutExpired):
-                # Method 3: Check if process is running by name
-                try:
-                    for proc in psutil.process_iter(['name']):
-                        if proc.info['name'] and service.lower() in proc.info['name'].lower():
-                            status_map[service] = "running"
-                            break
-                    else:
-                        status_map[service] = "stopped"
-                except Exception:
-                    status_map[service] = "unknown"
+            return False, "Command not found"
         except Exception as e:
-            logger.warning(f"Error checking service {service}: {e}")
-            status_map[service] = "error"
+            return False, f"Command error: {str(e)[:50]}"
     
-    return status_map
+    def check_systemd(self, service_name, timeout=5):
+        """Check systemd service status"""
+        try:
+            # Check if service is active
+            result = subprocess.run(
+                ['systemctl', 'is-active', service_name],
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+            
+            is_active = result.returncode == 0
+            
+            # Get detailed state
+            show_result = subprocess.run(
+                ['systemctl', 'show', service_name, '--property=SubState,ActiveState'],
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+            
+            state_info = show_result.stdout.strip()
+            
+            return is_active, state_info if state_info else "active" if is_active else "inactive"
+            
+        except subprocess.TimeoutExpired:
+            return False, "systemd timeout"
+        except FileNotFoundError:
+            return None, "systemd not available"
+        except Exception as e:
+            return None, f"systemd error: {str(e)[:50]}"
+    
+    def check_process(self, service_name):
+        """Fallback: Check if process is running by name"""
+        try:
+            for proc in psutil.process_iter(['name', 'cmdline']):
+                proc_name = proc.info.get('name', '').lower()
+                cmdline = ' '.join(proc.info.get('cmdline', [])).lower()
+                
+                if service_name.lower() in proc_name or service_name.lower() in cmdline:
+                    return True, f"Process found (PID: {proc.pid})"
+            
+            return False, "Process not found"
+            
+        except Exception as e:
+            return False, f"Process check error: {str(e)[:50]}"
+    
+    def check_service(self, service_name, config):
+        """
+        Perform multi-signal health check on a service.
+        Returns: {state, checks: {check_name: result}}
+        """
+        checks = {}
+        
+        # 1. Functional/Protocol checks (highest priority)
+        functional_passed = False
+        
+        check_type = config.get('check_type', 'auto')
+        
+        if check_type == 'http' or (check_type == 'auto' and 'url' in config):
+            passed, msg = self.check_http(config)
+            checks['http'] = {'passed': passed, 'message': msg}
+            functional_passed = passed
+            
+        elif check_type == 'tcp' or (check_type == 'auto' and 'port' in config):
+            passed, msg = self.check_tcp_port(config)
+            checks['tcp_port'] = {'passed': passed, 'message': msg}
+            functional_passed = passed
+            
+        elif check_type == 'socket' or (check_type == 'auto' and 'socket_path' in config):
+            passed, msg = self.check_unix_socket(config)
+            checks['unix_socket'] = {'passed': passed, 'message': msg}
+            functional_passed = passed
+            
+        elif check_type == 'command' or (check_type == 'auto' and 'command' in config):
+            passed, msg = self.check_command(config)
+            checks['command'] = {'passed': passed, 'message': msg}
+            functional_passed = passed
+        
+        # 2. Systemd check (secondary signal)
+        systemd_passed, systemd_msg = self.check_systemd(service_name)
+        if systemd_passed is not None:
+            checks['systemd'] = {'passed': systemd_passed, 'message': systemd_msg}
+        
+        # 3. Process check (fallback)
+        if not checks or (systemd_passed is None and not functional_passed):
+            proc_passed, proc_msg = self.check_process(service_name)
+            checks['process'] = {'passed': proc_passed, 'message': proc_msg}
+        
+        # Determine overall state based on multi-signal model
+        state = self._determine_state(checks, functional_passed, systemd_passed)
+        
+        return {
+            'state': state,
+            'checks': checks
+        }
+    
+    def _determine_state(self, checks, functional_passed, systemd_passed):
+        """Determine overall health state from multiple signals"""
+        
+        # If no checks were performed
+        if not checks:
+            return self.UNKNOWN
+        
+        # If functional check exists and passed -> HEALTHY
+        if functional_passed:
+            return self.HEALTHY
+        
+        # If functional check exists but failed, check if service is running
+        if 'http' in checks or 'tcp_port' in checks or 'unix_socket' in checks or 'command' in checks:
+            # Functional check was attempted
+            if not functional_passed:
+                # Check if service is at least running (degraded state)
+                if systemd_passed or checks.get('process', {}).get('passed'):
+                    return self.DEGRADED
+                else:
+                    return self.DOWN
+        
+        # No functional check, rely on systemd/process
+        if systemd_passed or checks.get('process', {}).get('passed'):
+            return self.HEALTHY
+        elif systemd_passed is False or checks.get('process', {}).get('passed') is False:
+            return self.DOWN
+        
+        return self.UNKNOWN
+    
+    def check_all_services(self):
+        """Check all configured services"""
+        results = {}
+        
+        for service_name, config in self.service_configs.items():
+            try:
+                results[service_name] = self.check_service(service_name, config)
+            except Exception as e:
+                logger.error(f"Error checking service {service_name}: {e}")
+                results[service_name] = {
+                    'state': self.UNKNOWN,
+                    'checks': {'error': {'passed': False, 'message': str(e)[:100]}}
+                }
+        
+        return results
+
+def get_service_status():
+    """Get status of monitored services using robust multi-signal health checks"""
+    
+    # Auto-detect service configurations
+    service_configs = {}
+    
+    for service in SERVICES_MONITOR:
+        service_configs[service] = _get_default_service_config(service)
+    
+    checker = ServiceHealthChecker(service_configs)
+    return checker.check_all_services()
+
+def _get_default_service_config(service_name):
+    """Get default configuration for common services"""
+    
+    # Common service configurations with functional checks
+    defaults = {
+        'nginx': {
+            'check_type': 'http',
+            'url': 'http://127.0.0.1:80',
+            'expected_status': [200, 301, 302, 404]  # Any response means nginx is working
+        },
+        'apache2': {
+            'check_type': 'http',
+            'url': 'http://127.0.0.1:80',
+            'expected_status': [200, 301, 302, 404]
+        },
+        'mysql': {
+            'check_type': 'command',
+            'command': ['mysqladmin', 'ping', '-h', '127.0.0.1']
+        },
+        'mariadb': {
+            'check_type': 'command',
+            'command': ['mysqladmin', 'ping', '-h', '127.0.0.1']
+        },
+        'postgresql': {
+            'check_type': 'tcp',
+            'host': '127.0.0.1',
+            'port': 5432
+        },
+        'mongodb': {
+            'check_type': 'tcp',
+            'host': '127.0.0.1',
+            'port': 27017
+        },
+        'redis': {
+            'check_type': 'tcp',
+            'host': '127.0.0.1',
+            'port': 6379
+        },
+        'docker': {
+            'check_type': 'socket',
+            'socket_path': '/var/run/docker.sock'
+        },
+        'ssh': {
+            'check_type': 'tcp',
+            'host': '127.0.0.1',
+            'port': 22
+        },
+        'sshd': {
+            'check_type': 'tcp',
+            'host': '127.0.0.1',
+            'port': 22
+        }
+    }
+    
+    return defaults.get(service_name, {'check_type': 'auto'})
 
 def get_ist_timestamp():
     """Get current timestamp in IST (Indian Standard Time)"""

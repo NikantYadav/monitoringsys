@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Calendar, Download, TrendingUp } from 'lucide-react';
+import { Calendar, Download, TrendingUp, RefreshCw } from 'lucide-react';
 import {
     Chart as ChartJS,
     CategoryScale,
@@ -27,32 +27,142 @@ ChartJS.register(
 const HistoricalData = ({ vmId, hostname }) => {
     const [historicalData, setHistoricalData] = useState([]);
     const [selectedPeriod, setSelectedPeriod] = useState('1h');
-    const [loading, setLoading] = useState(false);
+    const [loading, setLoading] = useState(true); // Only true on initial load
+    const [isRefreshing, setIsRefreshing] = useState(false); // Separate state for refresh
     const [selectedDataPoint, setSelectedDataPoint] = useState(null);
+    const [showCustomRange, setShowCustomRange] = useState(false);
+    const [customStartDate, setCustomStartDate] = useState('');
+    const [customEndDate, setCustomEndDate] = useState('');
+    const [customRangeLabel, setCustomRangeLabel] = useState(''); // Store custom range label
+    const refreshInterval = 30; // Fixed 30 seconds
 
     useEffect(() => {
-        fetchHistoricalData();
+        if (selectedPeriod !== 'custom') {
+            fetchHistoricalData(null, null, true); // Initial load
+        }
     }, [vmId, selectedPeriod]);
 
-    const fetchHistoricalData = async () => {
-        setLoading(true);
+    // Auto-refresh effect (always enabled except for custom range)
+    useEffect(() => {
+        if (selectedPeriod === 'custom') return;
+
+        const interval = setInterval(() => {
+            fetchHistoricalData(null, null, false); // Background refresh
+        }, refreshInterval * 1000);
+
+        return () => clearInterval(interval);
+    }, [vmId, selectedPeriod]);
+
+    const fetchHistoricalData = async (startDate = null, endDate = null, isInitialLoad = false) => {
+        if (isInitialLoad) {
+            setLoading(true);
+        } else {
+            setIsRefreshing(true);
+        }
+        
         try {
-            console.log(`Fetching historical data for ${vmId}, period: ${selectedPeriod}`);
-            const response = await fetch(`http://localhost:5000/api/metrics/${vmId}?period=${selectedPeriod}&limit=200`);
+            let url;
+            if (startDate && endDate) {
+                console.log(`Fetching custom range data for ${vmId}:`);
+                console.log(`  Start: ${startDate}`);
+                console.log(`  End: ${endDate}`);
+                url = `http://localhost:5000/api/metrics/${vmId}?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}&limit=1000`;
+                console.log(`  URL: ${url}`);
+            } else {
+                console.log(`Fetching historical data for ${vmId}, period: ${selectedPeriod}`);
+                url = `http://localhost:5000/api/metrics/${vmId}?period=${selectedPeriod}&limit=200`;
+            }
+            
+            const response = await fetch(url);
             
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
             
             const data = await response.json();
-            console.log(`Received ${data.length} historical records:`, data.slice(0, 2)); // Log first 2 records
+            console.log(`Received ${data.length} historical records`);
+            
+            if (data.length > 0) {
+                console.log(`First record timestamp: ${data[0].timestamp}`);
+                console.log(`Last record timestamp: ${data[data.length - 1].timestamp}`);
+            }
+            
             setHistoricalData(data);
         } catch (error) {
             console.error('Error fetching historical data:', error);
-            setHistoricalData([]); // Set empty array on error
+            if (isInitialLoad) {
+                setHistoricalData([]);
+            }
         } finally {
             setLoading(false);
+            setIsRefreshing(false);
         }
+    };
+
+    const handleCustomRangeApply = () => {
+        if (customStartDate && customEndDate) {
+            const start = new Date(customStartDate).toISOString();
+            const end = new Date(customEndDate).toISOString();
+            
+            // Validate date range
+            if (new Date(start) > new Date(end)) {
+                alert('Start date must be before end date');
+                return;
+            }
+            
+            // Create label for display
+            const startLabel = new Date(customStartDate).toLocaleString('en-IN', {
+                timeZone: 'Asia/Kolkata',
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+            const endLabel = new Date(customEndDate).toLocaleString('en-IN', {
+                timeZone: 'Asia/Kolkata',
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+            setCustomRangeLabel(`${startLabel} - ${endLabel}`);
+            
+            console.log('Applying custom range:', { start, end });
+            fetchHistoricalData(start, end, true);
+            setShowCustomRange(false);
+        } else {
+            alert('Please select both start and end dates');
+        }
+    };
+
+    const handlePeriodChange = (period) => {
+        setSelectedPeriod(period);
+        if (period === 'custom') {
+            setShowCustomRange(true);
+            // Set default dates (last 24 hours)
+            const end = new Date();
+            const start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
+            setCustomEndDate(formatDateTimeLocal(end));
+            setCustomStartDate(formatDateTimeLocal(start));
+            // Clear historical data until custom range is applied
+            setHistoricalData([]);
+            setCustomRangeLabel('');
+        } else {
+            setShowCustomRange(false);
+            setCustomStartDate('');
+            setCustomEndDate('');
+            setCustomRangeLabel('');
+        }
+    };
+
+    // Helper to format date for datetime-local input
+    const formatDateTimeLocal = (date) => {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        return `${year}-${month}-${day}T${hours}:${minutes}`;
     };
 
     const exportData = () => {
@@ -87,7 +197,7 @@ const HistoricalData = ({ vmId, hostname }) => {
         );
     }
 
-    if (historicalData.length === 0) {
+    if (historicalData.length === 0 && selectedPeriod !== 'custom') {
         return (
             <div className="card">
                 <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
@@ -145,6 +255,17 @@ const HistoricalData = ({ vmId, hostname }) => {
     const chartOptions = {
         responsive: true,
         maintainAspectRatio: false,
+        animation: {
+            duration: 750, // Smooth animation
+            easing: 'easeInOutQuart'
+        },
+        transitions: {
+            active: {
+                animation: {
+                    duration: 0 // No animation on hover
+                }
+            }
+        },
         scales: {
             y: { 
                 beginAtZero: true, 
@@ -185,16 +306,24 @@ const HistoricalData = ({ vmId, hostname }) => {
 
     return (
         <div className="card">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-                <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0 }}>
-                    <TrendingUp size={20} />
-                    Historical Data - {hostname}
-                </h3>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
+                <div>
+                    <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0 }}>
+                        <TrendingUp size={20} />
+                        Historical Data - {hostname}
+                    </h3>
+                    {selectedPeriod === 'custom' && customRangeLabel && (
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                            <Calendar size={12} />
+                            {customRangeLabel}
+                        </div>
+                    )}
+                </div>
                 
-                <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
                     <select 
                         value={selectedPeriod} 
-                        onChange={(e) => setSelectedPeriod(e.target.value)}
+                        onChange={(e) => handlePeriodChange(e.target.value)}
                         style={{ 
                             padding: '0.5rem', 
                             borderRadius: '4px', 
@@ -208,7 +337,22 @@ const HistoricalData = ({ vmId, hostname }) => {
                         <option value="24h">Last 24 Hours</option>
                         <option value="7d">Last 7 Days</option>
                         <option value="30d">Last 30 Days</option>
+                        <option value="custom">Custom Range</option>
                     </select>
+                    
+                    {/* Refresh indicator */}
+                    {isRefreshing && selectedPeriod !== 'custom' && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                            <RefreshCw 
+                                size={14} 
+                                style={{ 
+                                    color: 'var(--success)',
+                                    animation: 'spin 1s linear infinite'
+                                }} 
+                            />
+                            Updating...
+                        </div>
+                    )}
                     
                     <button 
                         className="btn"
@@ -252,6 +396,126 @@ const HistoricalData = ({ vmId, hostname }) => {
                     </div>
                 </div>
             </div>
+
+            {/* Custom Date Range Modal */}
+            {showCustomRange && (
+                <div style={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 1000
+                }}>
+                    <div style={{
+                        backgroundColor: 'var(--bg-card)',
+                        borderRadius: '12px',
+                        padding: '2rem',
+                        minWidth: '400px',
+                        border: '1px solid var(--border)'
+                    }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+                            <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <Calendar size={20} />
+                                Select Custom Date Range
+                            </h3>
+                            <button
+                                onClick={() => {
+                                    setShowCustomRange(false);
+                                    setSelectedPeriod('1h');
+                                }}
+                                style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    color: 'var(--text-primary)',
+                                    fontSize: '1.5rem',
+                                    cursor: 'pointer'
+                                }}
+                            >
+                                ✕
+                            </button>
+                        </div>
+
+                        <div style={{ marginBottom: '1.5rem' }}>
+                            <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                                Start Date & Time
+                            </label>
+                            <input
+                                type="datetime-local"
+                                value={customStartDate}
+                                onChange={(e) => setCustomStartDate(e.target.value)}
+                                style={{
+                                    width: '100%',
+                                    padding: '0.75rem',
+                                    borderRadius: '6px',
+                                    border: '1px solid var(--border)',
+                                    backgroundColor: 'var(--bg-secondary)',
+                                    color: 'var(--text-primary)',
+                                    fontSize: '1rem'
+                                }}
+                            />
+                        </div>
+
+                        <div style={{ marginBottom: '1.5rem' }}>
+                            <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                                End Date & Time
+                            </label>
+                            <input
+                                type="datetime-local"
+                                value={customEndDate}
+                                onChange={(e) => setCustomEndDate(e.target.value)}
+                                style={{
+                                    width: '100%',
+                                    padding: '0.75rem',
+                                    borderRadius: '6px',
+                                    border: '1px solid var(--border)',
+                                    backgroundColor: 'var(--bg-secondary)',
+                                    color: 'var(--text-primary)',
+                                    fontSize: '1rem'
+                                }}
+                            />
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
+                            <button
+                                onClick={() => {
+                                    setShowCustomRange(false);
+                                    setSelectedPeriod('1h');
+                                }}
+                                style={{
+                                    padding: '0.75rem 1.5rem',
+                                    borderRadius: '6px',
+                                    border: '1px solid var(--border)',
+                                    backgroundColor: 'var(--bg-secondary)',
+                                    color: 'var(--text-primary)',
+                                    cursor: 'pointer'
+                                }}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={handleCustomRangeApply}
+                                disabled={!customStartDate || !customEndDate}
+                                style={{
+                                    padding: '0.75rem 1.5rem',
+                                    borderRadius: '6px',
+                                    border: 'none',
+                                    backgroundColor: customStartDate && customEndDate ? 'var(--accent)' : 'var(--border)',
+                                    color: 'white',
+                                    cursor: customStartDate && customEndDate ? 'pointer' : 'not-allowed',
+                                    fontWeight: 'bold'
+                                }}
+                            >
+                                Apply Range
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Data Point Detail Modal */}
             {selectedDataPoint && (
@@ -378,22 +642,69 @@ const HistoricalData = ({ vmId, hostname }) => {
                         {selectedDataPoint.services && Object.keys(selectedDataPoint.services).length > 0 && (
                             <div style={{ padding: '1rem', backgroundColor: 'rgba(224, 175, 104, 0.1)', borderRadius: '8px' }}>
                                 <h4 style={{ margin: '0 0 0.75rem 0', color: '#e0af68' }}>Services</h4>
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                                    {Object.entries(selectedDataPoint.services).map(([service, status]) => (
-                                        <div key={service} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                            <span>{service}</span>
-                                            <span style={{
-                                                padding: '0.25rem 0.75rem',
-                                                borderRadius: '4px',
-                                                fontSize: '0.75rem',
-                                                fontWeight: 'bold',
-                                                backgroundColor: status === 'running' ? 'rgba(158, 206, 106, 0.2)' : 'rgba(247, 118, 142, 0.2)',
-                                                color: status === 'running' ? '#9ece6a' : '#f7768e'
-                                            }}>
-                                                {status}
-                                            </span>
-                                        </div>
-                                    ))}
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                                    {Object.entries(selectedDataPoint.services).map(([service, statusData]) => {
+                                        // Handle both old format (string) and new format (object)
+                                        const state = typeof statusData === 'string' ? statusData : statusData.state;
+                                        const checks = typeof statusData === 'object' ? statusData.checks : null;
+                                        
+                                        // Get color based on state
+                                        const getStateColor = (state) => {
+                                            switch(state) {
+                                                case 'healthy': return { bg: 'rgba(158, 206, 106, 0.2)', text: '#9ece6a' };
+                                                case 'degraded': return { bg: 'rgba(224, 175, 104, 0.2)', text: '#e0af68' };
+                                                case 'down': return { bg: 'rgba(247, 118, 142, 0.2)', text: '#f7768e' };
+                                                case 'unknown': return { bg: 'rgba(148, 163, 184, 0.2)', text: '#94a3b8' };
+                                                case 'running': return { bg: 'rgba(158, 206, 106, 0.2)', text: '#9ece6a' };
+                                                case 'stopped': return { bg: 'rgba(247, 118, 142, 0.2)', text: '#f7768e' };
+                                                default: return { bg: 'rgba(148, 163, 184, 0.2)', text: '#94a3b8' };
+                                            }
+                                        };
+                                        
+                                        // Get emoji for state
+                                        const getStateEmoji = (state) => {
+                                            switch(state) {
+                                                case 'healthy': return '🟢';
+                                                case 'degraded': return '🟡';
+                                                case 'down': return '🔴';
+                                                case 'unknown': return '⚪';
+                                                default: return '';
+                                            }
+                                        };
+                                        
+                                        const colors = getStateColor(state);
+                                        
+                                        return (
+                                            <div key={service} style={{ padding: '0.75rem', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '6px' }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                    <span style={{ fontWeight: '600' }}>{service}</span>
+                                                    <span style={{
+                                                        padding: '0.25rem 0.75rem',
+                                                        borderRadius: '4px',
+                                                        fontSize: '0.75rem',
+                                                        fontWeight: 'bold',
+                                                        backgroundColor: colors.bg,
+                                                        color: colors.text
+                                                    }}>
+                                                        {getStateEmoji(state)} {state}
+                                                    </span>
+                                                </div>
+                                                {checks && (
+                                                    <div style={{ marginTop: '0.5rem', paddingLeft: '0.5rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                                                        {Object.entries(checks).map(([checkName, checkResult]) => (
+                                                            <div key={checkName} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem' }}>
+                                                                <span>{checkResult.passed ? '✅' : '❌'}</span>
+                                                                <span style={{ textTransform: 'capitalize' }}>{checkName}:</span>
+                                                                <span style={{ color: checkResult.passed ? '#9ece6a' : '#f7768e' }}>
+                                                                    {checkResult.message}
+                                                                </span>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
                                 </div>
                             </div>
                         )}
