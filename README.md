@@ -63,6 +63,13 @@ PGPORT=5432
 PGUSER=postgres
 PGPASSWORD=your_password
 PGDATABASE=monitoring_sys
+
+# Optional: Email Notifications
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your-email@gmail.com
+SMTP_PASS=your-app-password
+ADMIN_EMAILS=admin@example.com
 ```
 
 ### 3. Start the Discovery Server
@@ -105,6 +112,30 @@ Edit `agent/config.json` to customize:
 - **Auto-Discovery**: Agents automatically register with the server
 - **Dual-Path Connection**: Direct WebSocket for real-time + HTTP for storage
 
+### Alerting System
+- **Multi-Metric Alerts**: Monitor CPU, memory, disk, swap, load average, inodes, and I/O wait
+- **Threshold-Based**: Warning and critical thresholds with configurable durations
+- **Service Monitoring**: Alerts when services stop or become degraded
+- **Real-time Notifications**: Browser notifications for critical alerts
+- **Email Notifications**: SMTP-based email alerts with HTML templates
+- **Alert Management**: Acknowledge and resolve alerts from the dashboard
+- **Alert History**: View all alerts with filtering by state and severity
+- **Configurable Rules**: Customize thresholds and durations for each metric
+- **Auto-Resolution**: Alerts automatically resolve when metrics return to normal
+- **Daily Summaries**: Optional email digest of alert activity
+
+#### Default Alert Thresholds
+
+| Metric | Warning | Critical | Reason |
+|--------|---------|----------|--------|
+| CPU Usage | > 80% (5 mins) | > 90% (5 mins) | High usage freezes apps |
+| Load Average | > Cores × 1.5 | > Cores × 2.0 | Shows queue of waiting processes |
+| Memory Usage | > 80% | > 90-95% | Approaching 100% triggers OOM Killer |
+| Swap Usage | > 60% | > 90% | High swap drastically slows down VM |
+| Disk Space | > 85% | > 95% | Full partition crashes OS |
+| Inodes Usage | > 85% | > 95% | Can run out even with space left |
+| Disk I/O Wait | > 20% | > 40% | CPU idle waiting for disk writes |
+
 ### Historical Data
 - **Data Persistence**: Metrics saved to TimescaleDB at configurable intervals
 - **Historical Charts**: View trends over 1h, 6h, 24h, 7d, or 30d periods
@@ -125,6 +156,7 @@ Edit `agent/config.json` to customize:
 - **Live Updates**: Configuration changes applied immediately via WebSocket
 - **Preset Configurations**: Quick settings for different use cases
 - **Dual Frequency**: Separate intervals for display vs storage optimization
+- **Alert Rules**: Configure thresholds and durations for all alert types
 
 ## Data Storage Recommendations
 

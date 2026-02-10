@@ -16,6 +16,7 @@ const Navbar = () => {
                 </Link>
                 <div style={{ display: 'flex', gap: '1rem' }}>
                     <Link to="/" style={{ color: 'var(--text-secondary)' }}>Dashboard</Link>
+                    <Link to="/alert-rules" style={{ color: 'var(--text-secondary)' }}>Alert Rules</Link>
                 </div>
             </div>
         </nav>

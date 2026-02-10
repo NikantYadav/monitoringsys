@@ -48,6 +48,13 @@ def get_cpu_metrics():
         'cores': psutil.cpu_percent(interval=None, percpu=True)
     }
 
+def get_load_average():
+    """Get system load average (1, 5, 15 minutes)"""
+    try:
+        return os.getloadavg()  # Returns tuple (1min, 5min, 15min)
+    except (AttributeError, OSError):
+        return None
+
 def get_memory_metrics():
     mem = psutil.virtual_memory()
     return {
@@ -56,13 +63,57 @@ def get_memory_metrics():
         'percent': mem.percent
     }
 
+def get_swap_metrics():
+    """Get swap memory usage"""
+    try:
+        swap = psutil.swap_memory()
+        return {
+            'total': swap.total,
+            'used': swap.used,
+            'percent': swap.percent
+        }
+    except Exception:
+        return None
+
 def get_disk_metrics():
     disk = psutil.disk_usage('/')
-    return {
+    
+    # Get inode information (Linux only)
+    inodes_percent = None
+    try:
+        if hasattr(os, 'statvfs'):
+            st = os.statvfs('/')
+            total_inodes = st.f_files
+            free_inodes = st.f_ffree
+            if total_inodes > 0:
+                used_inodes = total_inodes - free_inodes
+                inodes_percent = (used_inodes / total_inodes) * 100
+    except Exception as e:
+        logger.debug(f"Could not get inode info: {e}")
+    
+    # Get I/O wait percentage (Linux only)
+    io_wait = None
+    try:
+        # Get CPU times to calculate I/O wait
+        cpu_times = psutil.cpu_times_percent(interval=0.1)
+        if hasattr(cpu_times, 'iowait'):
+            io_wait = cpu_times.iowait
+    except Exception as e:
+        logger.debug(f"Could not get I/O wait: {e}")
+    
+    result = {
         'total': disk.total,
         'used': disk.used,
         'percent': disk.percent
     }
+    
+    if inodes_percent is not None:
+        result['inodesPercent'] = inodes_percent
+    
+    if io_wait is not None:
+        result['ioWait'] = io_wait
+    
+    return result
 
 def get_top_processes(n=5):
     processes = []
@@ -411,16 +462,30 @@ def get_ist_timestamp():
     return int(ist_time.timestamp() * 1000)
 
 def collect_metrics():
-    return {
+    cpu_metrics = get_cpu_metrics()
+    load_avg = get_load_average()
+    
+    metrics = {
         'vmId': VM_ID,
         'hostname': HOSTNAME,
-        'cpu': get_cpu_metrics(),
+        'cpu': cpu_metrics,
         'memory': get_memory_metrics(),
         'disk': get_disk_metrics(),
         'processes': get_top_processes(),
         'services': get_service_status(),
         'timestamp': get_ist_timestamp()
     }
+    
+    # Add load average if available
+    if load_avg:
+        metrics['loadAverage'] = load_avg
+    
+    # Add swap metrics if available
+    swap = get_swap_metrics()
+    if swap:
+        metrics['swap'] = swap
+    
+    return metrics
 
 async def registration_loop():
     """ Periodically register with discovery server """

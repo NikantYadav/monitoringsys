@@ -17,6 +17,7 @@ import io from 'socket.io-client';
 import DataManagement from '../components/DataManagement';
 import HistoricalData from '../components/HistoricalData';
 import ConnectionStatus from '../components/ConnectionStatus';
+import AlertsPanel from '../components/AlertsPanel';
 
 ChartJS.register(
     CategoryScale,
@@ -198,6 +199,22 @@ const VMDetails = () => {
                 >
                     <Activity size={16} />
                     Real-time
+                </button>
+                <button 
+                    className={`btn ${activeTab === 'alerts' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('alerts')}
+                    style={{ 
+                        backgroundColor: activeTab === 'alerts' ? 'var(--accent)' : 'transparent',
+                        border: 'none',
+                        borderBottom: activeTab === 'alerts' ? '2px solid var(--accent)' : '2px solid transparent',
+                        borderRadius: '0',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.5rem',
+                        color: 'white'
+                    }}
+                >
+                    Alerts
                 </button>
                 <button 
                     className={`btn ${activeTab === 'historical' ? 'active' : ''}`}
@@ -406,13 +423,7 @@ const VMDetails = () => {
                                     
                                     // Get emoji for state
                                     const getStateEmoji = (state) => {
-                                        switch(state) {
-                                            case 'healthy': return '🟢';
-                                            case 'degraded': return '🟡';
-                                            case 'down': return '🔴';
-                                            case 'unknown': return '⚪';
-                                            default: return '';
-                                        }
+                                        return '';
                                     };
                                     
                                     return (
@@ -427,7 +438,13 @@ const VMDetails = () => {
                                                 <div style={{ marginTop: '0.5rem', paddingLeft: '0.5rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
                                                     {Object.entries(checks).map(([checkName, checkResult]) => (
                                                         <div key={checkName} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem' }}>
-                                                            <span>{checkResult.passed ? '✅' : '❌'}</span>
+                                                            <span style={{ 
+                                                                width: '8px', 
+                                                                height: '8px', 
+                                                                borderRadius: '50%', 
+                                                                backgroundColor: checkResult.passed ? '#9ece6a' : '#f7768e',
+                                                                display: 'inline-block'
+                                                            }}></span>
                                                             <span style={{ textTransform: 'capitalize' }}>{checkName}:</span>
                                                             <span style={{ color: checkResult.passed ? '#9ece6a' : '#f7768e' }}>
                                                                 {checkResult.message}
@@ -448,6 +465,10 @@ const VMDetails = () => {
                     </>
                     )}
                 </>
+            )}
+
+            {activeTab === 'alerts' && (
+                <AlertsPanel vmId={vmId} socket={socketRef.current} />
             )}
 
             {activeTab === 'historical' && (

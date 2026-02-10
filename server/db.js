@@ -6,7 +6,7 @@ const pool = new Pool({
     port: process.env.PGPORT || 5432,
     user: process.env.PGUSER || 'postgres',
     password: process.env.PGPASSWORD,
-    database: process.env.PGDATABASE || 'monitoring_sys',
+    database: process.env.PGDATABASE || 'postgres',
     max: 20, // Maximum number of clients in the pool
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 2000,
@@ -67,6 +67,34 @@ async function initializeDatabase() {
             ON metrics (vm_id, timestamp DESC);
         `);
         console.log('✓ Indexes created');
+        
+        // Create alerts table (simple notification log)
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS alerts (
+                id SERIAL PRIMARY KEY,
+                vm_id TEXT NOT NULL,
+                hostname TEXT NOT NULL,
+                metric_type TEXT NOT NULL,
+                severity TEXT NOT NULL CHECK (severity IN ('warning', 'critical')),
+                threshold_value TEXT NOT NULL,
+                current_value TEXT NOT NULL,
+                message TEXT NOT NULL,
+                triggered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        console.log('✓ Alerts table created');
+        
+        // Create indexes for alerts
+        await client.query(`
+            CREATE INDEX IF NOT EXISTS idx_alerts_vm_id_triggered 
+            ON alerts (vm_id, triggered_at DESC);
+        `);
+        await client.query(`
+            CREATE INDEX IF NOT EXISTS idx_alerts_triggered 
+            ON alerts (triggered_at DESC);
+        `);
+        console.log('✓ Alert indexes created');
         
         // Set up automatic data retention (optional - delete data older than 30 days)
         await client.query(`

@@ -12,6 +12,7 @@ import {
     Filler
 } from 'chart.js';
 import { Line } from 'react-chartjs-2';
+import { LTTB } from 'downsample';
 
 ChartJS.register(
     CategoryScale,
@@ -66,11 +67,11 @@ const HistoricalData = ({ vmId, hostname }) => {
                 console.log(`Fetching custom range data for ${vmId}:`);
                 console.log(`  Start: ${startDate}`);
                 console.log(`  End: ${endDate}`);
-                url = `http://localhost:5000/api/metrics/${vmId}?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}&limit=1000`;
+                url = `http://localhost:5000/api/metrics/${vmId}?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}&limit=10000`;
                 console.log(`  URL: ${url}`);
             } else {
                 console.log(`Fetching historical data for ${vmId}, period: ${selectedPeriod}`);
-                url = `http://localhost:5000/api/metrics/${vmId}?period=${selectedPeriod}&limit=200`;
+                url = `http://localhost:5000/api/metrics/${vmId}?period=${selectedPeriod}&limit=10000`;
             }
             
             const response = await fetch(url);
@@ -211,8 +212,46 @@ const HistoricalData = ({ vmId, hostname }) => {
         );
     }
 
-    // Prepare chart data
-    const labels = historicalData.map(item => 
+    // Downsample data using LTTB library for efficient visualization
+    const downsampleData = (data, threshold = 500) => {
+        if (!data || data.length === 0) {
+            return [];
+        }
+        
+        if (data.length <= threshold) {
+            return data;
+        }
+
+        try {
+            // Convert data to format expected by LTTB: [[x, y], ...]
+            const cpuData = data.map((item, idx) => [idx, item.cpu.usage]);
+            const memoryData = data.map((item, idx) => [idx, item.memory.percent]);
+            const diskData = data.map((item, idx) => [idx, item.disk?.percent || 0]);
+
+            // Downsample each metric
+            const cpuDownsampled = LTTB(cpuData, threshold);
+            const memoryDownsampled = LTTB(memoryData, threshold);
+            const diskDownsampled = LTTB(diskData, threshold);
+
+            // Use CPU indices as the base (they should all be similar)
+            const indices = new Set(cpuDownsampled.map(point => point[0]));
+            
+            // Return original data points at downsampled indices
+            return data.filter((_, idx) => indices.has(idx));
+        } catch (error) {
+            console.error('Downsampling error:', error);
+            // Fallback to simple sampling
+            const step = Math.ceil(data.length / threshold);
+            return data.filter((_, idx) => idx % step === 0);
+        }
+    };
+
+    // Prepare chart data with downsampling
+    const displayData = historicalData.length > 0 ? downsampleData(historicalData, 500) : [];
+    
+    console.log('Historical data:', historicalData.length, 'Display data:', displayData.length);
+    
+    const labels = displayData.map(item => 
         new Date(item.timestamp).toLocaleString('en-IN', {
             timeZone: 'Asia/Kolkata',
             month: '2-digit',
@@ -227,27 +266,36 @@ const HistoricalData = ({ vmId, hostname }) => {
         datasets: [
             {
                 label: 'CPU Usage (%)',
-                data: historicalData.map(item => item.cpu.usage),
+                data: displayData.map(item => item.cpu?.usage || 0),
                 borderColor: '#7aa2f7',
                 backgroundColor: 'rgba(122, 162, 247, 0.1)',
                 fill: false,
-                tension: 0.1,
+                tension: 0.4,
+                pointRadius: displayData.length > 100 ? 0 : 2,
+                pointHoverRadius: 4,
+                borderWidth: 2,
             },
             {
                 label: 'Memory Usage (%)',
-                data: historicalData.map(item => item.memory.percent),
+                data: displayData.map(item => item.memory?.percent || 0),
                 borderColor: '#bb9af7',
                 backgroundColor: 'rgba(187, 154, 247, 0.1)',
                 fill: false,
-                tension: 0.1,
+                tension: 0.4,
+                pointRadius: displayData.length > 100 ? 0 : 2,
+                pointHoverRadius: 4,
+                borderWidth: 2,
             },
             {
                 label: 'Disk Usage (%)',
-                data: historicalData.map(item => item.disk?.percent || 0),
+                data: displayData.map(item => item.disk?.percent || 0),
                 borderColor: '#9ece6a',
                 backgroundColor: 'rgba(158, 206, 106, 0.1)',
                 fill: false,
-                tension: 0.1,
+                tension: 0.4,
+                pointRadius: displayData.length > 100 ? 0 : 2,
+                pointHoverRadius: 4,
+                borderWidth: 2,
             }
         ]
     };
@@ -256,15 +304,7 @@ const HistoricalData = ({ vmId, hostname }) => {
         responsive: true,
         maintainAspectRatio: false,
         animation: {
-            duration: 750, // Smooth animation
-            easing: 'easeInOutQuart'
-        },
-        transitions: {
-            active: {
-                animation: {
-                    duration: 0 // No animation on hover
-                }
-            }
+            duration: 0, // Disable animation for better performance
         },
         scales: {
             y: { 
@@ -277,8 +317,9 @@ const HistoricalData = ({ vmId, hostname }) => {
                 grid: { color: '#414868' },
                 ticks: { 
                     color: '#a9b1d6',
-                    maxTicksLimit: 8,
-                    maxRotation: 45
+                    maxTicksLimit: 10,
+                    maxRotation: 45,
+                    autoSkip: true
                 }
             }
         },
@@ -299,9 +340,9 @@ const HistoricalData = ({ vmId, hostname }) => {
         onClick: (event, elements) => {
             if (elements.length > 0) {
                 const dataIndex = elements[0].index;
-                setSelectedDataPoint(historicalData[dataIndex]);
+                setSelectedDataPoint(displayData[dataIndex]);
             }
-        }
+        },
     };
 
     return (
@@ -390,9 +431,15 @@ const HistoricalData = ({ vmId, hostname }) => {
                     </div>
                 </div>
                 <div style={{ textAlign: 'center', padding: '0.75rem', backgroundColor: 'rgba(158, 206, 106, 0.1)', borderRadius: '6px' }}>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Data Points</div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Total Points</div>
                     <div style={{ fontWeight: 'bold', color: '#9ece6a' }}>
-                        {historicalData.length}
+                        {historicalData.length.toLocaleString()}
+                    </div>
+                </div>
+                <div style={{ textAlign: 'center', padding: '0.75rem', backgroundColor: 'rgba(224, 175, 104, 0.1)', borderRadius: '6px' }}>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Displayed</div>
+                    <div style={{ fontWeight: 'bold', color: '#e0af68' }}>
+                        {displayData.length.toLocaleString()}
                     </div>
                 </div>
             </div>
@@ -535,8 +582,9 @@ const HistoricalData = ({ vmId, hostname }) => {
                         backgroundColor: 'var(--bg-card)',
                         borderRadius: '12px',
                         padding: '2rem',
-                        maxWidth: '600px',
-                        maxHeight: '80vh',
+                        maxWidth: '900px',
+                        width: '90%',
+                        maxHeight: '85vh',
                         overflowY: 'auto',
                         border: '1px solid var(--border)'
                     }}>
@@ -638,6 +686,109 @@ const HistoricalData = ({ vmId, hostname }) => {
                             </div>
                         )}
 
+                        {/* Top 5 CPU Processes */}
+                        {selectedDataPoint.processes && (
+                            <div style={{ marginBottom: '1.5rem', padding: '1rem', backgroundColor: 'rgba(255, 158, 100, 0.1)', borderRadius: '8px' }}>
+                                <h4 style={{ margin: '0 0 0.75rem 0', color: '#ff9e64' }}>Top 5 CPU Processes</h4>
+                                {(() => {
+                                    // Handle both array and object formats
+                                    let processList = [];
+                                    
+                                    if (Array.isArray(selectedDataPoint.processes)) {
+                                        processList = selectedDataPoint.processes.map(proc => ({
+                                            name: proc.name,
+                                            cpu: proc.cpu_percent || proc.cpu || proc.cpuPercent || 0,
+                                            memory: proc.memory_percent || proc.memory || proc.memoryPercent || 0,
+                                            pid: proc.pid || 'N/A'
+                                        }));
+                                    } else if (typeof selectedDataPoint.processes === 'object') {
+                                        // Convert object to array
+                                        processList = Object.entries(selectedDataPoint.processes).map(([name, data]) => ({
+                                            name: name,
+                                            cpu: data.cpu_percent || data.cpu || data.cpuPercent || 0,
+                                            memory: data.memory_percent || data.memory || data.memoryPercent || 0,
+                                            pid: data.pid || 'N/A'
+                                        }));
+                                    }
+                                    
+                                    // Filter and sort
+                                    const topProcesses = processList
+                                        .filter(process => process && typeof process.cpu === 'number' && process.cpu > 0)
+                                        .sort((a, b) => (b.cpu || 0) - (a.cpu || 0))
+                                        .slice(0, 5);
+                                    
+                                    if (topProcesses.length === 0) {
+                                        return (
+                                            <div style={{ 
+                                                textAlign: 'center', 
+                                                padding: '1rem', 
+                                                color: 'var(--text-secondary)',
+                                                fontSize: '0.875rem'
+                                            }}>
+                                                No process data available
+                                            </div>
+                                        );
+                                    }
+                                    
+                                    return (
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                                            {topProcesses.map((process, idx) => (
+                                                <div key={idx} style={{
+                                                    display: 'flex',
+                                                    justifyContent: 'space-between',
+                                                    alignItems: 'center',
+                                                    padding: '0.5rem',
+                                                    backgroundColor: 'rgba(0, 0, 0, 0.2)',
+                                                    borderRadius: '4px',
+                                                    fontSize: '0.875rem'
+                                                }}>
+                                                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                                        <span style={{
+                                                            width: '20px',
+                                                            height: '20px',
+                                                            borderRadius: '50%',
+                                                            backgroundColor: idx === 0 ? '#f7768e' : idx === 1 ? '#e0af68' : '#7aa2f7',
+                                                            display: 'flex',
+                                                            alignItems: 'center',
+                                                            justifyContent: 'center',
+                                                            fontSize: '0.7rem',
+                                                            fontWeight: 'bold',
+                                                            color: 'white'
+                                                        }}>
+                                                            {idx + 1}
+                                                        </span>
+                                                        <span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>
+                                                            {process.name || 'Unknown'}
+                                                        </span>
+                                                    </div>
+                                                    <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+                                                        <div style={{ textAlign: 'right' }}>
+                                                            <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>CPU</div>
+                                                            <div style={{ fontWeight: 'bold', color: '#ff9e64' }}>
+                                                                {(process.cpu || 0).toFixed(1)}%
+                                                            </div>
+                                                        </div>
+                                                        <div style={{ textAlign: 'right' }}>
+                                                            <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Memory</div>
+                                                            <div style={{ fontWeight: 'bold', color: '#bb9af7' }}>
+                                                                {(process.memory || 0).toFixed(1)}%
+                                                            </div>
+                                                        </div>
+                                                        <div style={{ textAlign: 'right', minWidth: '60px' }}>
+                                                            <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>PID</div>
+                                                            <div style={{ fontWeight: 'bold', color: 'var(--text-secondary)', fontSize: '0.75rem' }}>
+                                                                {process.pid || 'N/A'}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    );
+                                })()}
+                            </div>
+                        )}
+
                         {/* Services Status */}
                         {selectedDataPoint.services && Object.keys(selectedDataPoint.services).length > 0 && (
                             <div style={{ padding: '1rem', backgroundColor: 'rgba(224, 175, 104, 0.1)', borderRadius: '8px' }}>
@@ -663,13 +814,7 @@ const HistoricalData = ({ vmId, hostname }) => {
                                         
                                         // Get emoji for state
                                         const getStateEmoji = (state) => {
-                                            switch(state) {
-                                                case 'healthy': return '🟢';
-                                                case 'degraded': return '🟡';
-                                                case 'down': return '🔴';
-                                                case 'unknown': return '⚪';
-                                                default: return '';
-                                            }
+                                            return '';
                                         };
                                         
                                         const colors = getStateColor(state);
@@ -693,7 +838,13 @@ const HistoricalData = ({ vmId, hostname }) => {
                                                     <div style={{ marginTop: '0.5rem', paddingLeft: '0.5rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
                                                         {Object.entries(checks).map(([checkName, checkResult]) => (
                                                             <div key={checkName} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem' }}>
-                                                                <span>{checkResult.passed ? '✅' : '❌'}</span>
+                                                                <span style={{ 
+                                                                    width: '8px', 
+                                                                    height: '8px', 
+                                                                    borderRadius: '50%', 
+                                                                    backgroundColor: checkResult.passed ? '#9ece6a' : '#f7768e',
+                                                                    display: 'inline-block'
+                                                                }}></span>
                                                                 <span style={{ textTransform: 'capitalize' }}>{checkName}:</span>
                                                                 <span style={{ color: checkResult.passed ? '#9ece6a' : '#f7768e' }}>
                                                                     {checkResult.message}

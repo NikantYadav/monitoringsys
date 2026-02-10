@@ -3,6 +3,9 @@ const express = require('express');
 const cors = require('cors');
 const { pool, initializeDatabase } = require('./db');
 const Metric = require('./models/Metric');
+const Alert = require('./models/Alert');
+const alertEngine = require('./alertEngine');
+const emailNotifier = require('./emailNotifier');
 
 const app = express();
 const http = require('http').createServer(app);
@@ -18,6 +21,7 @@ const PORT = process.env.PORT || 5000;
         await initializeDatabase();
         console.log('✓ TimescaleDB ready');
         console.log('Database:', process.env.PGDATABASE || 'monitoring_sys');
+        console.log('✓ Alert engine initialized');
     } catch (err) {
         console.error('✗ TimescaleDB initialization error:', err.message);
         console.error('💡 Please check:');
@@ -102,7 +106,7 @@ app.get('/api/metrics/:vmId', async (req, res) => {
             startTime = new Date(startDate);
             const endTime = new Date(endDate);
             
-            console.log(`📊 Custom range request: vmId=${vmId}, from=${startTime.toISOString()} to=${endTime.toISOString()}`);
+            console.log(`Custom range request: vmId=${vmId}, from=${startTime.toISOString()} to=${endTime.toISOString()}`);
             
             // Query with custom date range
             const query = `
@@ -152,13 +156,13 @@ app.get('/api/metrics/:vmId', async (req, res) => {
                 services: row.services
             }));
             
-            console.log(`✅ Found ${metrics.length} records for custom range`);
+            console.log(`Found ${metrics.length} records for custom range`);
             res.json(metrics.reverse()); // Return chronological order
             return;
         }
         
         // Standard period-based query
-        console.log(`📊 Historical data request: vmId=${vmId}, period=${period}, limit=${limit}`);
+        console.log(`Historical data request: vmId=${vmId}, period=${period}, limit=${limit}`);
         
         startTime = new Date();
         switch (period) {
@@ -174,11 +178,11 @@ app.get('/api/metrics/:vmId', async (req, res) => {
 
         const metrics = await Metric.find(vmId, startTime, parseInt(limit));
 
-        console.log(`✅ Found ${metrics.length} historical records for ${vmId}`);
+        console.log(`Found ${metrics.length} historical records for ${vmId}`);
 
         res.json(metrics.reverse()); // Return chronological order
     } catch (error) {
-        console.error('❌ Error fetching metrics:', error);
+        console.error('Error fetching metrics:', error);
         res.status(500).json({ error: 'Failed to fetch metrics' });
     }
 });
@@ -291,6 +295,14 @@ io.on('connection', (socket) => {
             // Save to TimescaleDB
             await Metric.save(data);
             
+            // Evaluate metrics for alerts
+            const alerts = await alertEngine.evaluateMetrics(data);
+            
+            // Broadcast alerts to dashboard clients
+            if (alerts.length > 0) {
+                io.emit('alerts:new', { vmId: data.vmId, alerts });
+            }
+            
             // Log with IST time for better debugging
             const istTime = new Date(data.timestamp).toLocaleString('en-IN', {
                 timeZone: 'Asia/Kolkata',
@@ -386,6 +398,91 @@ app.get('/api/vms/all', async (req, res) => {
     } catch (error) {
         console.error('Error fetching all VMs:', error);
         res.status(500).json({ error: 'Failed to fetch VMs' });
+    }
+});
+
+// 9. Get Alerts for a VM
+app.get('/api/alerts/:vmId', async (req, res) => {
+    try {
+        const { vmId } = req.params;
+        const { severity, metricType, period, limit = 100 } = req.query;
+        
+        const options = { limit: parseInt(limit) };
+        
+        if (severity) options.severity = severity;
+        if (metricType) options.metricType = metricType;
+        
+        if (period) {
+            const startTime = new Date();
+            switch (period) {
+                case '1h': startTime.setHours(startTime.getHours() - 1); break;
+                case '6h': startTime.setHours(startTime.getHours() - 6); break;
+                case '24h': startTime.setHours(startTime.getHours() - 24); break;
+                case '7d': startTime.setDate(startTime.getDate() - 7); break;
+                case '30d': startTime.setDate(startTime.getDate() - 30); break;
+            }
+            options.startTime = startTime;
+        }
+        
+        const alerts = await Alert.find(vmId, options);
+        res.json(alerts);
+    } catch (error) {
+        console.error('Error fetching alerts:', error);
+        res.status(500).json({ error: 'Failed to fetch alerts' });
+    }
+});
+
+// 11. Get Alert Statistics
+app.get('/api/alerts/:vmId/stats', async (req, res) => {
+    try {
+        const { vmId } = req.params;
+        const { period = '24h' } = req.query;
+        const stats = await Alert.getStats(vmId, period);
+        res.json(stats);
+    } catch (error) {
+        console.error('Error fetching alert stats:', error);
+        res.status(500).json({ error: 'Failed to fetch alert stats' });
+    }
+});
+
+// 14. Delete Old Alerts
+app.delete('/api/alerts/:vmId/old', async (req, res) => {
+    try {
+        const { vmId } = req.params;
+        const { days = 30 } = req.query;
+        
+        const result = await Alert.deleteOld(vmId, parseInt(days));
+        res.json({ 
+            success: true, 
+            deletedCount: result.deletedCount,
+            message: `Deleted ${result.deletedCount} alerts older than ${days} days`
+        });
+    } catch (error) {
+        console.error('Error deleting old alerts:', error);
+        res.status(500).json({ error: 'Failed to delete old alerts' });
+    }
+});
+
+// 15. Get Alert Rules
+app.get('/api/alert-rules', (req, res) => {
+    try {
+        const rules = alertEngine.getRules();
+        res.json(rules);
+    } catch (error) {
+        console.error('Error fetching alert rules:', error);
+        res.status(500).json({ error: 'Failed to fetch alert rules' });
+    }
+});
+
+// 16. Update Alert Rules
+app.post('/api/alert-rules', (req, res) => {
+    try {
+        const newRules = req.body;
+        alertEngine.updateRules(newRules);
+        res.json({ success: true, rules: alertEngine.getRules() });
+    } catch (error) {
+        console.error('Error updating alert rules:', error);
+        res.status(500).json({ error: 'Failed to update alert rules' });
     }
 });
 

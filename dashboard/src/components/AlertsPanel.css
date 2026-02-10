@@ -1,0 +1,254 @@
+.alerts-panel {
+  padding: 15px;
+  background: transparent;
+  border-radius: 8px;
+  margin-top: 15px;
+}
+
+.alerts-panel.loading {
+  text-align: center;
+  padding: 30px;
+  color: var(--text-secondary);
+}
+
+.alerts-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+}
+
+.alerts-header h2 {
+  margin: 0;
+  font-size: 20px;
+  color: var(--text-primary);
+}
+
+.btn-notification {
+  padding: 6px 12px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.btn-notification:hover {
+  opacity: 0.85;
+}
+
+.alert-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 15px;
+}
+
+.stat-card {
+  background: var(--bg-card);
+  padding: 12px;
+  border-radius: 6px;
+  text-align: center;
+  border: 1px solid var(--border);
+}
+
+.stat-card.warning {
+  border-left: 3px solid var(--warning);
+}
+
+.stat-card.critical {
+  border-left: 3px solid var(--danger);
+}
+
+.stat-card.total {
+  border-left: 3px solid var(--accent);
+}
+
+.stat-value {
+  font-size: 24px;
+  font-weight: bold;
+  color: var(--text-primary);
+  margin-bottom: 3px;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.alerts-filters {
+  display: flex;
+  gap: 15px;
+  margin-bottom: 15px;
+  padding: 10px;
+  background: var(--bg-card);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+.filter-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.filter-group label {
+  font-weight: 500;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.filter-group select {
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  background: var(--bg-dark);
+  color: var(--text-primary);
+}
+
+.alerts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 600px;
+  overflow-y: auto;
+  padding-right: 5px;
+}
+
+.alerts-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.alerts-list::-webkit-scrollbar-track {
+  background: var(--bg-card);
+  border-radius: 3px;
+}
+
+.alerts-list::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+.alerts-list::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}
+
+.no-alerts {
+  text-align: center;
+  padding: 30px;
+  background: var(--bg-card);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.alert-card {
+  background: var(--bg-card);
+  border-radius: 6px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--border);
+  transition: all 0.15s;
+  border: 1px solid var(--border);
+}
+
+.alert-card:hover {
+  transform: translateX(2px);
+  border-left-width: 4px;
+}
+
+.alert-card.warning {
+  border-left-color: var(--warning);
+}
+
+.alert-card.critical {
+  border-left-color: var(--danger);
+}
+
+.alert-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.alert-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex: 1;
+}
+
+.alert-severity {
+  font-weight: bold;
+  font-size: 10px;
+  padding: 3px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+
+.alert-card.warning .alert-severity {
+  background: rgba(224, 175, 104, 0.2);
+  color: var(--warning);
+}
+
+.alert-card.critical .alert-severity {
+  background: rgba(247, 118, 142, 0.2);
+  color: var(--danger);
+}
+
+.alert-metric {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.alert-timestamp {
+  font-size: 11px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.alert-message {
+  font-size: 12px;
+  color: var(--text-primary);
+  line-height: 1.4;
+  margin-bottom: 6px;
+}
+
+.alert-details {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.alert-details span {
+  padding: 2px 6px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}
+
+@media (max-width: 768px) {
+  .alert-stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .alerts-filters {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .alert-header-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
