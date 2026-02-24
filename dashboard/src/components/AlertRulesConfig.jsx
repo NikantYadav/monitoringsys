@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import './AlertRulesConfig.css';
+import config from '../config';
 
 const AlertRulesConfig = () => {
   const [rules, setRules] = useState(null);
@@ -14,7 +15,7 @@ const AlertRulesConfig = () => {
   const fetchRules = async () => {
     try {
       setLoading(true);
-      const response = await fetch('http://localhost:5000/api/alert-rules');
+      const response = await fetch(`${config.SERVER_URL}/api/alert-rules`);
       const data = await response.json();
       setRules(data);
     } catch (error) {
@@ -28,7 +29,7 @@ const AlertRulesConfig = () => {
   const saveRules = async () => {
     try {
       setSaving(true);
-      const response = await fetch('http://localhost:5000/api/alert-rules', {
+      const response = await fetch(`${config.SERVER_URL}/api/alert-rules`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(rules)

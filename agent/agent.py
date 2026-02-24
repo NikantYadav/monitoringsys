@@ -2,6 +2,7 @@ import asyncio
 import psutil
 import socketio
 from aiohttp import web
+import aiohttp_cors
 import socket
 import os
 import json
@@ -20,11 +21,17 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'config.json')
 with open(CONFIG_PATH, 'r') as f:
     config = json.load(f)
 
-# Discovery Server URL
-DISCOVERY_URL = config.get('server_url', 'http://localhost:5000').replace('/api/metrics', '')
+# Discovery Server URL - extract base URL from config
+SERVER_URL = config.get('server_url', 'http://localhost:5000')
+# Remove any path suffixes to get base URL
+if '/api/' in SERVER_URL:
+    DISCOVERY_URL = SERVER_URL.split('/api/')[0]
+else:
+    DISCOVERY_URL = SERVER_URL.rstrip('/')
+
 AGENT_PORT = 5001
 VM_ID = config.get('vm_id')
-HOSTNAME = socket.gethostname()
+HOSTNAME = config.get('hostname', socket.gethostname())  # Use config hostname, fallback to system hostname
 BROADCAST_INTERVAL = config.get('broadcast_interval', 0.5)  # Real-time updates
 STORAGE_INTERVAL = config.get('storage_interval', 5)  # Database storage
 SERVICES_MONITOR = config.get('services_to_monitor', [])
@@ -34,8 +41,26 @@ broadcast_counter = 0
 storage_counter = 0
 
 # Create Socket.IO Server (Async) for direct dashboard connections
-sio = socketio.AsyncServer(async_mode='aiohttp', cors_allowed_origins='*')
+sio = socketio.AsyncServer(
+    async_mode='aiohttp',
+    cors_allowed_origins='*',
+    cors_credentials=True
+)
+
+# Create aiohttp app with CORS support
 app = web.Application()
+
+# Configure CORS for all routes
+cors = aiohttp_cors.setup(app, defaults={
+    "*": aiohttp_cors.ResourceOptions(
+        allow_credentials=True,
+        expose_headers="*",
+        allow_headers="*",
+        allow_methods="*"
+    )
+})
+
+# Attach Socket.IO to app
 sio.attach(app)
 
 # Create Socket.IO Client for server connection (storage path)
@@ -274,17 +299,122 @@ class ServiceHealthChecker:
     def check_process(self, service_name):
         """Fallback: Check if process is running by name"""
         try:
-            for proc in psutil.process_iter(['name', 'cmdline']):
-                proc_name = proc.info.get('name', '').lower()
-                cmdline = ' '.join(proc.info.get('cmdline', [])).lower()
-                
-                if service_name.lower() in proc_name or service_name.lower() in cmdline:
-                    return True, f"Process found (PID: {proc.pid})"
+            for proc in psutil.process_iter(['name', 'cmdline', 'username']):
+                try:
+                    proc_name = proc.info.get('name', '').lower()
+                    cmdline = ' '.join(proc.info.get('cmdline', [])).lower()
+                    
+                    if service_name.lower() in proc_name or service_name.lower() in cmdline:
+                        return True, f"Process found (PID: {proc.pid})"
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
             
             return False, "Process not found"
             
         except Exception as e:
             return False, f"Process check error: {str(e)[:50]}"
+    
+    def check_pm2(self, service_name=None):
+        """Check PM2 managed Node.js processes"""
+        try:
+            # Try to run pm2 jlist (JSON output)
+            result = subprocess.run(
+                ['pm2', 'jlist'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.returncode != 0:
+                return None, "PM2 not available or no processes"
+            
+            import json
+            try:
+                processes = json.loads(result.stdout)
+                
+                if not processes:
+                    return False, "No PM2 processes running"
+                
+                # If checking for specific service, look for it
+                if service_name:
+                    for proc in processes:
+                        if service_name.lower() in proc.get('name', '').lower():
+                            status = proc.get('pm2_env', {}).get('status', 'unknown')
+                            if status == 'online':
+                                return True, f"PM2: {proc['name']} online (PID: {proc.get('pid')})"
+                            else:
+                                return False, f"PM2: {proc['name']} {status}"
+                    return False, f"Service '{service_name}' not found in PM2"
+                else:
+                    # Just check if any PM2 processes are online
+                    online_count = sum(1 for p in processes if p.get('pm2_env', {}).get('status') == 'online')
+                    if online_count > 0:
+                        return True, f"PM2: {online_count} process(es) online"
+                    else:
+                        return False, "PM2: No processes online"
+                        
+            except json.JSONDecodeError:
+                return None, "PM2 output parse error"
+                
+        except FileNotFoundError:
+            return None, "PM2 not installed"
+        except subprocess.TimeoutExpired:
+            return None, "PM2 check timeout"
+        except Exception as e:
+            return None, f"PM2 check error: {str(e)[:50]}"
+    
+    def check_nodejs_processes(self):
+        """Check for Node.js/npm processes using multiple methods"""
+        try:
+            # Method 1: Check for node processes via ps command (works across users)
+            result = subprocess.run(
+                ['ps', 'aux'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.returncode == 0:
+                lines = result.stdout.lower().split('\n')
+                node_processes = []
+                
+                for line in lines:
+                    # Look for node, npm, or nodejs in the command
+                    if any(keyword in line for keyword in ['node ', 'npm ', 'nodejs']):
+                        # Exclude grep itself and system processes
+                        if 'grep' not in line and 'node.mojom' not in line:
+                            # Extract PID (second column)
+                            parts = line.split()
+                            if len(parts) >= 2:
+                                try:
+                                    pid = int(parts[1])
+                                    node_processes.append(pid)
+                                except ValueError:
+                                    continue
+                
+                if node_processes:
+                    return True, f"Found {len(node_processes)} Node.js process(es)"
+            
+            # Method 2: Try pgrep as fallback
+            result = subprocess.run(
+                ['pgrep', '-f', 'node|npm'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.returncode == 0 and result.stdout.strip():
+                pids = result.stdout.strip().split('\n')
+                return True, f"Found {len(pids)} Node.js process(es) via pgrep"
+            
+            return False, "No Node.js processes found"
+            
+        except FileNotFoundError:
+            return None, "ps/pgrep command not available"
+        except subprocess.TimeoutExpired:
+            return None, "Process check timeout"
+        except Exception as e:
+            return None, f"Process check error: {str(e)[:50]}"
     
     def check_service(self, service_name, config):
         """
@@ -323,8 +453,28 @@ class ServiceHealthChecker:
         if systemd_passed is not None:
             checks['systemd'] = {'passed': systemd_passed, 'message': systemd_msg}
         
-        # 3. Process check (fallback)
-        if not checks or (systemd_passed is None and not functional_passed):
+        # 3. Special handling for Node.js services
+        if service_name.lower() in ['node', 'nodejs']:
+            # Check PM2 first (production environment)
+            pm2_passed, pm2_msg = self.check_pm2()
+            if pm2_passed is not None:
+                checks['pm2'] = {'passed': pm2_passed, 'message': pm2_msg}
+                if pm2_passed:
+                    functional_passed = True
+            
+            # Check for Node.js processes (npm start, node app.js, etc.)
+            node_proc_passed, node_proc_msg = self.check_nodejs_processes()
+            if node_proc_passed is not None:
+                checks['nodejs_processes'] = {'passed': node_proc_passed, 'message': node_proc_msg}
+                if node_proc_passed:
+                    functional_passed = True
+        
+        # 4. Process check (fallback for other services)
+        # Always run process check if:
+        # - No functional check was performed, OR
+        # - Systemd is not available, OR
+        # - Systemd says service is down (to catch manually started processes)
+        if not functional_passed and (not checks or systemd_passed is None or systemd_passed is False):
             proc_passed, proc_msg = self.check_process(service_name)
             checks['process'] = {'passed': proc_passed, 'message': proc_msg}
         
@@ -427,9 +577,47 @@ def _get_default_service_config(service_name):
             'port': 27017
         },
         'redis': {
-            'check_type': 'tcp',
-            'host': '127.0.0.1',
-            'port': 6379
+            'check_type': 'command',
+            'command': ['redis-cli', 'ping']  # Returns PONG if healthy
+        },
+        'redis-server': {
+            'check_type': 'command',
+            'command': ['redis-cli', 'ping']
+        },
+        'elasticsearch': {
+            'check_type': 'http',
+            'url': 'http://127.0.0.1:9200/_cluster/health',
+            'expected_status': [200]  # Cluster health API
+        },
+        'php-fpm': {
+            'check_type': 'socket',
+            'socket_path': '/run/php/php-fpm.sock'  # Common socket path
+        },
+        'php7.4-fpm': {
+            'check_type': 'socket',
+            'socket_path': '/run/php/php7.4-fpm.sock'
+        },
+        'php8.0-fpm': {
+            'check_type': 'socket',
+            'socket_path': '/run/php/php8.0-fpm.sock'
+        },
+        'php8.1-fpm': {
+            'check_type': 'socket',
+            'socket_path': '/run/php/php8.1-fpm.sock'
+        },
+        'php8.2-fpm': {
+            'check_type': 'socket',
+            'socket_path': '/run/php/php8.2-fpm.sock'
+        },
+        'php8.3-fpm': {
+            'check_type': 'socket',
+            'socket_path': '/run/php/php8.3-fpm.sock'
+        },
+        'node': {
+            'check_type': 'auto'  # Will use systemd/process check
+        },
+        'nodejs': {
+            'check_type': 'auto'
         },
         'docker': {
             'check_type': 'socket',
@@ -491,10 +679,25 @@ async def registration_loop():
     """ Periodically register with discovery server """
     while True:
         try:
+            # Get the actual IP address of this machine
+            # Try to get the IP that can reach the discovery server
+            try:
+                # Create a socket to determine which interface would be used to reach the server
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                # Extract hostname from DISCOVERY_URL
+                server_host = DISCOVERY_URL.replace('http://', '').replace('https://', '').split(':')[0]
+                s.connect((server_host, 80))
+                local_ip = s.getsockname()[0]
+                s.close()
+            except Exception as e:
+                logger.warning(f"Could not determine local IP: {e}, using hostname")
+                # Fallback to getting hostname IP
+                local_ip = socket.gethostbyname(socket.gethostname())
+            
             payload = {
                 'vmId': VM_ID,
                 'hostname': HOSTNAME,
-                'ip': 'http://localhost', 
+                'ip': f'http://{local_ip}',  # Use actual IP instead of localhost
                 'port': AGENT_PORT,
                 'broadcastInterval': BROADCAST_INTERVAL,
                 'storageInterval': STORAGE_INTERVAL
@@ -503,7 +706,7 @@ async def registration_loop():
             # Register with discovery server
             response = requests.post(f"{DISCOVERY_URL}/api/register", json=payload, timeout=5)
             if response.status_code == 200:
-                logger.debug("Successfully registered with discovery server")
+                logger.debug(f"Successfully registered with discovery server at {local_ip}:{AGENT_PORT}")
             else:
                 logger.warning(f"Registration failed with status: {response.status_code}")
             
@@ -528,12 +731,11 @@ async def connect_to_server():
     
     for attempt in range(max_retries):
         try:
-            server_url = "http://localhost:5000"
-            logger.info(f"Attempting to connect to server at {server_url} (attempt {attempt + 1}/{max_retries})")
+            logger.info(f"Attempting to connect to server at {DISCOVERY_URL} (attempt {attempt + 1}/{max_retries})")
             
-            await server_sio.connect(server_url)
+            await server_sio.connect(DISCOVERY_URL)
             server_connected = True
-            logger.info(f"Successfully connected to server for storage")
+            logger.info(f"✓ Successfully connected to server at {DISCOVERY_URL}")
             return
             
         except Exception as e:
@@ -663,5 +865,6 @@ async def config_update(data):
 app.on_startup.append(start_background_tasks)
 
 if __name__ == "__main__":
-    print(f"Starting Agent Server (Aiohttp) on port {AGENT_PORT}")
-    web.run_app(app, port=AGENT_PORT)
+    print(f"Starting Agent Server on 0.0.0.0:{AGENT_PORT}")
+    print(f"Agent will be accessible from any network interface")
+    web.run_app(app, host='0.0.0.0', port=AGENT_PORT)

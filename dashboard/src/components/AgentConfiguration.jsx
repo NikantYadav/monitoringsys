@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Settings, Save, RefreshCw, Clock, Database } from 'lucide-react';
+import appConfig from '../config';
 
 const AgentConfiguration = ({ vmId, hostname }) => {
     const [config, setConfig] = useState({
@@ -17,7 +18,7 @@ const AgentConfiguration = ({ vmId, hostname }) => {
     const fetchConfiguration = async () => {
         setLoading(true);
         try {
-            const response = await fetch(`http://localhost:5000/api/config/${vmId}`);
+            const response = await fetch(`${appConfig.SERVER_URL}/api/config/${vmId}`);
             if (response.ok) {
                 const data = await response.json();
                 setConfig({
@@ -38,7 +39,7 @@ const AgentConfiguration = ({ vmId, hostname }) => {
         setMessage('');
 
         try {
-            const response = await fetch(`http://localhost:5000/api/config/${vmId}`, {
+            const response = await fetch(`${appConfig.SERVER_URL}/api/config/${vmId}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'

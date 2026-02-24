@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Calendar, Download, TrendingUp, RefreshCw } from 'lucide-react';
+import config from '../config';
 import {
     Chart as ChartJS,
     CategoryScale,
@@ -67,11 +68,11 @@ const HistoricalData = ({ vmId, hostname }) => {
                 console.log(`Fetching custom range data for ${vmId}:`);
                 console.log(`  Start: ${startDate}`);
                 console.log(`  End: ${endDate}`);
-                url = `http://localhost:5000/api/metrics/${vmId}?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}&limit=10000`;
+                url = `${config.SERVER_URL}/api/metrics/${vmId}?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}&limit=10000`;
                 console.log(`  URL: ${url}`);
             } else {
                 console.log(`Fetching historical data for ${vmId}, period: ${selectedPeriod}`);
-                url = `http://localhost:5000/api/metrics/${vmId}?period=${selectedPeriod}&limit=10000`;
+                url = `${config.SERVER_URL}/api/metrics/${vmId}?period=${selectedPeriod}&limit=10000`;
             }
             
             const response = await fetch(url);
@@ -198,19 +199,7 @@ const HistoricalData = ({ vmId, hostname }) => {
         );
     }
 
-    if (historicalData.length === 0 && selectedPeriod !== 'custom') {
-        return (
-            <div className="card">
-                <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-                    <TrendingUp size={20} />
-                    Historical Data - {hostname}
-                </h3>
-                <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-secondary)' }}>
-                    No historical data available for the selected period.
-                </div>
-            </div>
-        );
-    }
+    // Don't return early - always show the time range selector
 
     // Downsample data using LTTB library for efficient visualization
     const downsampleData = (data, threshold = 500) => {
@@ -398,13 +387,16 @@ const HistoricalData = ({ vmId, hostname }) => {
                     <button 
                         className="btn"
                         onClick={exportData}
+                        disabled={historicalData.length === 0}
                         style={{ 
                             display: 'flex', 
                             alignItems: 'center', 
                             gap: '0.5rem',
-                            backgroundColor: 'var(--accent)',
+                            backgroundColor: historicalData.length === 0 ? 'var(--border)' : 'var(--accent)',
                             border: 'none',
-                            color: 'white'
+                            color: 'white',
+                            cursor: historicalData.length === 0 ? 'not-allowed' : 'pointer',
+                            opacity: historicalData.length === 0 ? 0.5 : 1
                         }}
                     >
                         <Download size={16} />
@@ -413,36 +405,57 @@ const HistoricalData = ({ vmId, hostname }) => {
                 </div>
             </div>
 
-            <div style={{ height: '400px', marginBottom: '1rem' }}>
-                <Line data={chartData} options={chartOptions} />
-            </div>
+            {historicalData.length === 0 ? (
+                <div style={{ 
+                    height: '400px', 
+                    marginBottom: '1rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backgroundColor: 'rgba(0, 0, 0, 0.2)',
+                    borderRadius: '8px',
+                    border: '1px dashed var(--border)'
+                }}>
+                    <div style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
+                        <TrendingUp size={48} style={{ opacity: 0.3, marginBottom: '1rem' }} />
+                        <div style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>No historical data available for the selected period</div>
+                        <div style={{ fontSize: '0.875rem' }}>Try selecting a different time range above</div>
+                    </div>
+                </div>
+            ) : (
+                <>
+                    <div style={{ height: '400px', marginBottom: '1rem' }}>
+                        <Line data={chartData} options={chartOptions} />
+                    </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '1rem', marginTop: '1rem' }}>
-                <div style={{ textAlign: 'center', padding: '0.75rem', backgroundColor: 'rgba(122, 162, 247, 0.1)', borderRadius: '6px' }}>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Avg CPU</div>
-                    <div style={{ fontWeight: 'bold', color: '#7aa2f7' }}>
-                        {(historicalData.reduce((sum, item) => sum + item.cpu.usage, 0) / historicalData.length).toFixed(1)}%
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '1rem', marginTop: '1rem' }}>
+                        <div style={{ textAlign: 'center', padding: '0.75rem', backgroundColor: 'rgba(122, 162, 247, 0.1)', borderRadius: '6px' }}>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Avg CPU</div>
+                            <div style={{ fontWeight: 'bold', color: '#7aa2f7' }}>
+                                {(historicalData.reduce((sum, item) => sum + item.cpu.usage, 0) / historicalData.length).toFixed(1)}%
+                            </div>
+                        </div>
+                        <div style={{ textAlign: 'center', padding: '0.75rem', backgroundColor: 'rgba(187, 154, 247, 0.1)', borderRadius: '6px' }}>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Avg Memory</div>
+                            <div style={{ fontWeight: 'bold', color: '#bb9af7' }}>
+                                {(historicalData.reduce((sum, item) => sum + item.memory.percent, 0) / historicalData.length).toFixed(1)}%
+                            </div>
+                        </div>
+                        <div style={{ textAlign: 'center', padding: '0.75rem', backgroundColor: 'rgba(158, 206, 106, 0.1)', borderRadius: '6px' }}>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Total Points</div>
+                            <div style={{ fontWeight: 'bold', color: '#9ece6a' }}>
+                                {historicalData.length.toLocaleString()}
+                            </div>
+                        </div>
+                        <div style={{ textAlign: 'center', padding: '0.75rem', backgroundColor: 'rgba(224, 175, 104, 0.1)', borderRadius: '6px' }}>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Displayed</div>
+                            <div style={{ fontWeight: 'bold', color: '#e0af68' }}>
+                                {displayData.length.toLocaleString()}
+                            </div>
+                        </div>
                     </div>
-                </div>
-                <div style={{ textAlign: 'center', padding: '0.75rem', backgroundColor: 'rgba(187, 154, 247, 0.1)', borderRadius: '6px' }}>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Avg Memory</div>
-                    <div style={{ fontWeight: 'bold', color: '#bb9af7' }}>
-                        {(historicalData.reduce((sum, item) => sum + item.memory.percent, 0) / historicalData.length).toFixed(1)}%
-                    </div>
-                </div>
-                <div style={{ textAlign: 'center', padding: '0.75rem', backgroundColor: 'rgba(158, 206, 106, 0.1)', borderRadius: '6px' }}>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Total Points</div>
-                    <div style={{ fontWeight: 'bold', color: '#9ece6a' }}>
-                        {historicalData.length.toLocaleString()}
-                    </div>
-                </div>
-                <div style={{ textAlign: 'center', padding: '0.75rem', backgroundColor: 'rgba(224, 175, 104, 0.1)', borderRadius: '6px' }}>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Displayed</div>
-                    <div style={{ fontWeight: 'bold', color: '#e0af68' }}>
-                        {displayData.length.toLocaleString()}
-                    </div>
-                </div>
-            </div>
+                </>
+            )}
 
             {/* Custom Date Range Modal */}
             {showCustomRange && (

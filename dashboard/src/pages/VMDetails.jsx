@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useParams, Link, useLocation } from 'react-router-dom';
 import { ArrowLeft, Cpu, Activity, Database, TrendingUp } from 'lucide-react';
+import config from '../config';
 import {
     Chart as ChartJS,
     CategoryScale,
@@ -46,9 +47,10 @@ const VMDetails = () => {
     useEffect(() => {
         const fetchDiscovery = async () => {
             try {
-                const res = await fetch('http://localhost:5000/api/vms');
-                const agents = await res.json();
-                const target = agents.find(a => a._id === vmId);
+                // Use /api/vms/all to get both online and offline VMs
+                const res = await fetch(`${config.SERVER_URL}/api/vms/all`);
+                const allVms = await res.json();
+                const target = allVms.find(a => a._id === vmId);
                 if (target) {
                     setVmInfo(target);
                     if (!agentUrl) {

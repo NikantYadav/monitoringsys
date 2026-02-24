@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef, memo } from 'react';
 import { Link } from 'react-router-dom';
 import { Server, Activity } from 'lucide-react';
 import io from 'socket.io-client';
+import config from '../config';
 
 // Memoized VM Card component to prevent unnecessary re-renders
 const VMCard = memo(({ vm }) => {
@@ -140,7 +141,7 @@ const Dashboard = () => {
         // 1. Initial fetch of all VMs
         const fetchAllVMs = async () => {
             try {
-                const res = await fetch('http://localhost:5000/api/vms/all');
+                const res = await fetch(`${config.SERVER_URL}/api/vms/all`);
                 const allVms = await res.json();
 
                 // Initialize VM state with database info
@@ -178,7 +179,7 @@ const Dashboard = () => {
     useEffect(() => {
         const checkStatus = async () => {
             try {
-                const res = await fetch('http://localhost:5000/api/vms/all');
+                const res = await fetch(`${config.SERVER_URL}/api/vms/all`);
                 const allVms = await res.json();
 
                 setVms(prev => {

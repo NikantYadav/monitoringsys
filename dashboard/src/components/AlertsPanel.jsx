@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import './AlertsPanel.css';
+import config from '../config';
 
 const AlertsPanel = ({ vmId, socket }) => {
   const [alerts, setAlerts] = useState([]);
@@ -33,7 +34,7 @@ const AlertsPanel = ({ vmId, socket }) => {
   const fetchAlerts = async () => {
     try {
       setLoading(true);
-      const response = await fetch(`http://localhost:5000/api/alerts/${vmId}?limit=50`);
+      const response = await fetch(`${config.SERVER_URL}/api/alerts/${vmId}?limit=50`);
       const data = await response.json();
       setAlerts(data);
     } catch (error) {
@@ -45,7 +46,7 @@ const AlertsPanel = ({ vmId, socket }) => {
 
   const fetchStats = async () => {
     try {
-      const response = await fetch(`http://localhost:5000/api/alerts/${vmId}/stats?period=24h`);
+      const response = await fetch(`${config.SERVER_URL}/api/alerts/${vmId}/stats?period=24h`);
       const data = await response.json();
       setStats(data);
     } catch (error) {
@@ -84,10 +85,18 @@ const AlertsPanel = ({ vmId, socket }) => {
   });
 
   const formatTimestamp = (timestamp) => {
-    return new Date(timestamp).toLocaleString();
+    if (!timestamp) return 'N/A';
+    const date = new Date(timestamp);
+    if (isNaN(date.getTime())) return 'Invalid Date';
+    return date.toLocaleString();
   };
 
   const getMetricTypeLabel = (metricType) => {
+    // Handle undefined or null metricType
+    if (!metricType) {
+      return 'Unknown';
+    }
+    
     const labels = {
       'cpu_usage': 'CPU Usage',
       'load_average': 'Load Average',
@@ -163,10 +172,10 @@ const AlertsPanel = ({ vmId, socket }) => {
               <div className="alert-header-row">
                 <div className="alert-meta">
                   <span className="alert-severity">{alert.severity.toUpperCase()}</span>
-                  <span className="alert-metric">{getMetricTypeLabel(alert.metric_type)}</span>
+                  <span className="alert-metric">{getMetricTypeLabel(alert.metric_type || alert.metricType)}</span>
                 </div>
                 <div className="alert-timestamp">
-                  {formatTimestamp(alert.triggered_at)}
+                  {formatTimestamp(alert.triggered_at || alert.triggeredAt)}
                 </div>
               </div>
               
@@ -175,8 +184,8 @@ const AlertsPanel = ({ vmId, socket }) => {
               </div>
               
               <div className="alert-details">
-                <span>Threshold: {alert.threshold_value}</span>
-                <span>Current: {alert.current_value}</span>
+                <span>Threshold: {alert.threshold_value || alert.thresholdValue}</span>
+                <span>Current: {alert.current_value || alert.currentValue}</span>
               </div>
             </div>
           ))

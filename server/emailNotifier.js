@@ -17,8 +17,16 @@ class EmailNotifier {
         try {
             // Check if email configuration exists
             if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
-                console.log('Email notifications disabled - SMTP configuration not found');
-                console.log('   Set SMTP_HOST, SMTP_USER, SMTP_PASS in .env to enable');
+                console.log('\n' + '='.repeat(70));
+                console.log('📧 EMAIL NOTIFICATIONS: DISABLED');
+                console.log('='.repeat(70));
+                console.log('Reason: SMTP configuration not found in .env file');
+                console.log('To enable email alerts, configure these variables:');
+                console.log('  - SMTP_HOST');
+                console.log('  - SMTP_USER');
+                console.log('  - SMTP_PASS');
+                console.log('  - ADMIN_EMAILS');
+                console.log('='.repeat(70) + '\n');
                 return;
             }
 
@@ -37,12 +45,26 @@ class EmailNotifier {
             });
 
             this.enabled = true;
-            console.log('✓ Email notifications enabled');
+            
+            console.log('\n' + '='.repeat(70));
+            console.log('📧 EMAIL NOTIFICATIONS: ENABLED');
+            console.log('='.repeat(70));
+            console.log(`SMTP Host:    ${process.env.SMTP_HOST}:${process.env.SMTP_PORT || '587'}`);
+            console.log(`SMTP User:    ${process.env.SMTP_USER}`);
+            console.log(`From:         ${this.config.fromName} <${this.config.from}>`);
+            console.log(`Recipients:   ${this.config.adminEmails.join(', ')}`);
+            console.log(`Dashboard:    ${this.getDashboardUrl()}`);
+            console.log('-'.repeat(70));
+            console.log('Verifying SMTP connection...');
             
             // Verify connection
             this.verifyConnection();
         } catch (error) {
-            console.error('✗ Email notifier initialization failed:', error.message);
+            console.log('\n' + '='.repeat(70));
+            console.log('❌ EMAIL NOTIFICATIONS: INITIALIZATION FAILED');
+            console.log('='.repeat(70));
+            console.error(`Error: ${error.message}`);
+            console.log('='.repeat(70) + '\n');
             this.enabled = false;
         }
     }
@@ -52,11 +74,209 @@ class EmailNotifier {
 
         try {
             await this.transporter.verify();
-            console.log('✓ SMTP connection verified');
+            console.log('✅ SMTP connection verified successfully');
+            console.log('='.repeat(70) + '\n');
         } catch (error) {
-            console.error('✗ SMTP connection failed:', error.message);
+            console.log('❌ SMTP connection verification failed');
+            console.error(`Error: ${error.message}`);
+            console.log('='.repeat(70) + '\n');
             this.enabled = false;
         }
+    }
+
+    /**
+     * Send grouped service alerts notification email
+     */
+    async sendGroupedServiceAlerts(alerts, vmInfo = {}) {
+        if (!this.enabled) {
+            console.log('📧 Email notifications disabled, skipping...');
+            return { success: false, reason: 'disabled' };
+        }
+
+        if (this.config.adminEmails.length === 0) {
+            console.log('📧 No admin emails configured, skipping...');
+            return { success: false, reason: 'no_recipients' };
+        }
+
+        try {
+            const vmId = vmInfo.vmId || 'unknown';
+            const hostname = vmInfo.hostname || 'unknown';
+            const serviceCount = alerts.length;
+            
+            // Get highest severity
+            const hasCritical = alerts.some(a => a.severity === 'critical');
+            const severity = hasCritical ? 'critical' : 'warning';
+            const severityColor = severity === 'critical' ? '#f7768e' : '#ffc107';
+            
+            const subject = `[${severity.toUpperCase()}] ${serviceCount} Service${serviceCount > 1 ? 's' : ''} Down - ${hostname}`;
+            const html = this.buildGroupedServiceEmail(alerts, vmInfo, severityColor);
+            const text = this.buildGroupedServiceEmailText(alerts, vmInfo);
+
+            const mailOptions = {
+                from: `"${this.config.fromName}" <${this.config.from}>`,
+                to: this.config.adminEmails.join(', '),
+                subject: subject,
+                text: text,
+                html: html
+            };
+
+            console.log('\n' + '='.repeat(70));
+            console.log('📧 SENDING GROUPED SERVICE ALERT EMAIL');
+            console.log('='.repeat(70));
+            console.log(`From:     ${this.config.fromName} <${this.config.from}>`);
+            console.log(`To:       ${this.config.adminEmails.join(', ')}`);
+            console.log(`Subject:  ${subject}`);
+            console.log(`Services: ${alerts.map(a => a.metricType.replace('service_', '')).join(', ')}`);
+            console.log(`VM:       ${hostname} (${vmId})`);
+            console.log('-'.repeat(70));
+
+            const info = await this.transporter.sendMail(mailOptions);
+            
+            console.log(`✅ GROUPED EMAIL SENT SUCCESSFULLY`);
+            console.log(`Message ID: ${info.messageId}`);
+            console.log(`Response:   ${info.response || 'OK'}`);
+            console.log('='.repeat(70) + '\n');
+            
+            return { success: true, messageId: info.messageId };
+        } catch (error) {
+            console.log('❌ GROUPED EMAIL SEND FAILED');
+            console.error(`Error: ${error.message}`);
+            console.error(`Stack: ${error.stack}`);
+            console.log('='.repeat(70) + '\n');
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Build HTML email for grouped service alerts
+     */
+    buildGroupedServiceEmail(alerts, vmInfo, severityColor) {
+        const vmId = vmInfo.vmId || 'unknown';
+        const hostname = vmInfo.hostname || 'unknown';
+        const serviceCount = alerts.length;
+        
+        const serviceRows = alerts.map(alert => {
+            const serviceName = alert.metricType.replace('service_', '');
+            const downTime = this.formatDowntime(alert.triggered_at);
+            
+            return `
+                <tr>
+                    <td style="padding: 12px; border-bottom: 1px solid #eee;">
+                        <strong style="color: ${severityColor};">${serviceName}</strong>
+                    </td>
+                    <td style="padding: 12px; border-bottom: 1px solid #eee; color: #666;">
+                        ${downTime}
+                    </td>
+                    <td style="padding: 12px; border-bottom: 1px solid #eee; font-size: 13px; color: #888;">
+                        ${alert.message}
+                    </td>
+                </tr>
+            `;
+        }).join('');
+        
+        return `
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 700px; margin: 0 auto; padding: 20px; }
+        .header { background: ${severityColor}; color: white; padding: 20px; border-radius: 8px 8px 0 0; }
+        .header h1 { margin: 0; font-size: 24px; }
+        .content { background: #f5f5f5; padding: 20px; border-radius: 0 0 8px 8px; }
+        .alert-box { background: white; padding: 15px; border-left: 4px solid ${severityColor}; margin: 15px 0; border-radius: 4px; }
+        table { width: 100%; background: white; border-radius: 4px; overflow: hidden; }
+        .footer { text-align: center; padding: 20px; color: #999; font-size: 12px; }
+        .button { display: inline-block; padding: 12px 24px; background: #7aa2f7; color: white; text-decoration: none; border-radius: 6px; margin: 10px 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>⚠️ ${serviceCount} Service${serviceCount > 1 ? 's' : ''} Down</h1>
+            <p style="margin: 5px 0 0 0; opacity: 0.9;">${hostname}</p>
+        </div>
+        <div class="content">
+            <div class="alert-box">
+                <p style="font-size: 16px; margin: 0;">
+                    The following services are currently down and require attention:
+                </p>
+            </div>
+            
+            <table cellspacing="0" cellpadding="0">
+                <thead>
+                    <tr style="background: #f8f8f8;">
+                        <th style="padding: 12px; text-align: left; font-weight: 600;">Service</th>
+                        <th style="padding: 12px; text-align: left; font-weight: 600;">Status</th>
+                        <th style="padding: 12px; text-align: left; font-weight: 600;">Details</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${serviceRows}
+                </tbody>
+            </table>
+        </div>
+        <div class="footer">
+            <p>This is an automated grouped alert from your System Monitor</p>
+        </div>
+    </div>
+</body>
+</html>
+        `;
+    }
+
+    /**
+     * Build plain text email for grouped service alerts
+     */
+    buildGroupedServiceEmailText(alerts, vmInfo) {
+        const vmId = vmInfo.vmId || 'unknown';
+        const hostname = vmInfo.hostname || 'unknown';
+        const serviceCount = alerts.length;
+        
+        const serviceList = alerts.map(alert => {
+            const serviceName = alert.metricType.replace('service_', '');
+            const downTime = this.formatDowntime(alert.triggered_at);
+            return `  - ${serviceName} (${downTime})\n    ${alert.message}`;
+        }).join('\n\n');
+        
+        return `
+⚠️ ${serviceCount} SERVICE${serviceCount > 1 ? 'S' : ''} DOWN
+
+VM / Hostname: ${hostname}
+VM ID: ${vmId}
+
+The following services are currently down:
+
+${serviceList}
+
+---
+This is an automated grouped alert from your System Monitor
+        `;
+    }
+
+    /**
+     * Format downtime duration
+     */
+    formatDowntime(triggeredAt) {
+        const now = new Date();
+        const triggered = new Date(triggeredAt);
+        const diffMs = now - triggered;
+        const diffMins = Math.floor(diffMs / 60000);
+        
+        if (diffMins < 1) return 'Just now';
+        if (diffMins < 60) return `Down for ${diffMins} min`;
+        
+        const diffHours = Math.floor(diffMins / 60);
+        const remainingMins = diffMins % 60;
+        
+        if (diffHours < 24) {
+            return remainingMins > 0 
+                ? `Down for ${diffHours}h ${remainingMins}m`
+                : `Down for ${diffHours}h`;
+        }
+        
+        const diffDays = Math.floor(diffHours / 24);
+        return `Down for ${diffDays}d ${diffHours % 24}h`;
     }
 
     /**
@@ -64,19 +284,31 @@ class EmailNotifier {
      */
     async sendAlertNotification(alert, vmInfo = {}) {
         if (!this.enabled) {
-            console.log('Email notifications disabled, skipping...');
+            console.log('📧 Email notifications disabled, skipping...');
             return { success: false, reason: 'disabled' };
         }
 
         if (this.config.adminEmails.length === 0) {
-            console.log('No admin emails configured, skipping...');
+            console.log('📧 No admin emails configured, skipping...');
             return { success: false, reason: 'no_recipients' };
         }
 
         try {
-            const subject = this.buildSubject(alert);
-            const html = this.buildAlertEmail(alert, vmInfo);
-            const text = this.buildAlertEmailText(alert, vmInfo);
+            // Normalize alert object (handle both snake_case and camelCase)
+            const normalizedAlert = {
+                severity: alert.severity || 'warning',
+                hostname: alert.hostname || 'unknown',
+                vm_id: alert.vm_id || alert.vmId || 'unknown',
+                metric_type: alert.metric_type || alert.metricType || 'unknown',
+                message: alert.message || 'No message',
+                threshold_value: alert.threshold_value || alert.thresholdValue || 'N/A',
+                current_value: alert.current_value || alert.currentValue || 'N/A',
+                triggered_at: alert.triggered_at || alert.triggeredAt || new Date()
+            };
+
+            const subject = this.buildSubject(normalizedAlert);
+            const html = this.buildAlertEmail(normalizedAlert, vmInfo);
+            const text = this.buildAlertEmailText(normalizedAlert, vmInfo);
 
             const mailOptions = {
                 from: `"${this.config.fromName}" <${this.config.from}>`,
@@ -87,11 +319,18 @@ class EmailNotifier {
             };
 
             const info = await this.transporter.sendMail(mailOptions);
-            console.log(`✓ Alert email sent: ${info.messageId}`);
+            
+            console.log(`✅ EMAIL SENT SUCCESSFULLY`);
+            console.log(`Message ID: ${info.messageId}`);
+            console.log(`Response:   ${info.response || 'OK'}`);
+            console.log('='.repeat(70) + '\n');
             
             return { success: true, messageId: info.messageId };
         } catch (error) {
-            console.error('✗ Failed to send alert email:', error.message);
+            console.log('❌ EMAIL SEND FAILED');
+            console.error(`Error: ${error.message}`);
+            console.error(`Stack: ${error.stack}`);
+            console.log('='.repeat(70) + '\n');
             return { success: false, error: error.message };
         }
     }
@@ -173,15 +412,9 @@ class EmailNotifier {
                     <span class="value">${new Date(alert.triggered_at).toLocaleString()}</span>
                 </div>
             </div>
-
-            <div style="text-align: center; margin: 20px 0;">
-                <a href="${this.getDashboardUrl()}/vm/${alert.vm_id}" class="button">View Dashboard</a>
-                <a href="${this.getDashboardUrl()}/vm/${alert.vm_id}?tab=alerts" class="button">View Alerts</a>
-            </div>
         </div>
         <div class="footer">
             <p>This is an automated alert from your System Monitor</p>
-            <p>Dashboard: <a href="${this.getDashboardUrl()}">${this.getDashboardUrl()}</a></p>
         </div>
     </div>
 </body>
@@ -212,12 +445,8 @@ Threshold: ${alert.threshold_value}
 Current Value: ${alert.current_value}
 Triggered At: ${new Date(alert.triggered_at).toLocaleString()}
 
-View Dashboard: ${this.getDashboardUrl()}/vm/${alert.vm_id}
-View Alerts: ${this.getDashboardUrl()}/vm/${alert.vm_id}?tab=alerts
-
 ---
 This is an automated alert from your System Monitor
-Dashboard: ${this.getDashboardUrl()}
         `;
     }
 

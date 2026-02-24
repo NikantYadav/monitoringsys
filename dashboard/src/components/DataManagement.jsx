@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Database, Trash2, BarChart3, AlertCircle, RefreshCw } from 'lucide-react';
+import config from '../config';
 
 const DataManagement = ({ vmId, hostname }) => {
     const [storageStats, setStorageStats] = useState(null);
@@ -12,11 +13,11 @@ const DataManagement = ({ vmId, hostname }) => {
         fetchStorageStats();
     }, []);
 
-    // Auto-refresh effect (always enabled)
+    // Auto-refresh effect - refresh every 1 minute
     useEffect(() => {
         const interval = setInterval(() => {
             fetchStorageStats(true); // Background refresh
-        }, refreshInterval * 1000);
+        }, 60 * 1000); // 60 seconds = 1 minute
 
         return () => clearInterval(interval);
     }, []);
@@ -27,8 +28,9 @@ const DataManagement = ({ vmId, hostname }) => {
         }
         
         try {
-            const response = await fetch('http://localhost:5000/api/storage-stats');
+            const response = await fetch(`${config.SERVER_URL}/api/storage-stats`);
             const data = await response.json();
+            console.log('Storage stats received:', data); // Debug log
             setStorageStats(data);
         } catch (error) {
             console.error('Error fetching storage stats:', error);
@@ -46,7 +48,7 @@ const DataManagement = ({ vmId, hostname }) => {
         setMessage('');
 
         try {
-            const response = await fetch(`http://localhost:5000/api/metrics/${vmId}?period=${period}`, {
+            const response = await fetch(`${config.SERVER_URL}/api/metrics/${vmId}?period=${period}`, {
                 method: 'DELETE'
             });
             const result = await response.json();
@@ -112,29 +114,33 @@ const DataManagement = ({ vmId, hostname }) => {
             {storageStats && (
                 <div style={{ marginBottom: '2rem' }}>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
+                        {/* Total Records Card */}
                         <div style={{ padding: '1rem', backgroundColor: 'rgba(122, 162, 247, 0.1)', borderRadius: '8px' }}>
                             <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>Total Records</div>
                             <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--accent)' }}>
-                                {storageStats.totalRecords.toLocaleString()}
+                                {storageStats.totalRecords ? storageStats.totalRecords.toLocaleString() : '0'}
                             </div>
                         </div>
                         
+                        {/* VM-specific stats */}
                         {currentVmStats && (
                             <>
                                 <div style={{ padding: '1rem', backgroundColor: 'rgba(187, 154, 247, 0.1)', borderRadius: '8px' }}>
                                     <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>VM Records</div>
                                     <div style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>
-                                        {currentVmStats.totalRecords.toLocaleString()}
+                                        {currentVmStats.totalRecords ? currentVmStats.totalRecords.toLocaleString() : '0'}
                                     </div>
                                 </div>
                                 
-                                <div style={{ padding: '1rem', backgroundColor: 'rgba(158, 206, 106, 0.1)', borderRadius: '8px' }}>
-                                    <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>Data Range</div>
-                                    <div style={{ fontSize: '0.75rem' }}>
-                                        {formatDate(currentVmStats.oldestRecord)} <br />
-                                        to {formatDate(currentVmStats.newestRecord)}
+                                {currentVmStats.oldestRecord && currentVmStats.newestRecord && (
+                                    <div style={{ padding: '1rem', backgroundColor: 'rgba(158, 206, 106, 0.1)', borderRadius: '8px' }}>
+                                        <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>Data Range</div>
+                                        <div style={{ fontSize: '0.75rem' }}>
+                                            {formatDate(currentVmStats.oldestRecord)} <br />
+                                            to {formatDate(currentVmStats.newestRecord)}
+                                        </div>
                                     </div>
-                                </div>
+                                )}
                             </>
                         )}
                     </div>

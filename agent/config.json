@@ -1,13 +1,17 @@
 {
-  "server_url": "http://localhost:5000/api/metrics",
-  "vm_id": "vm-001-local",
-  "hostname": "ubuntu-dev",
+  "server_url": "http://localhost:5000",
+  "vm_id": "vm-002",
+  "hostname": "arch-linux",
   "broadcast_interval": 0.5,
   "storage_interval": 5,
   "services_to_monitor": [
     "nginx",
     "mysql",
     "mongodb",
+    "redis",
+    "elasticsearch",
+    "php8.2-fpm",
+    "nodejs",
     "docker",
     "ssh"
   ]

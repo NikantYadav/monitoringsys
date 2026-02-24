@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Wifi, WifiOff, Server, Activity } from 'lucide-react';
+import config from '../config';
 
 const ConnectionStatus = ({ agentUrl, vmId, agentStatus }) => {
     const [serverStatus, setServerStatus] = useState('disconnected');
@@ -8,7 +9,7 @@ const ConnectionStatus = ({ agentUrl, vmId, agentStatus }) => {
         // Check server connection
         const checkServerConnection = async () => {
             try {
-                const response = await fetch('http://localhost:5000/api/vms');
+                const response = await fetch(`${config.SERVER_URL}/api/vms`);
                 setServerStatus(response.ok ? 'connected' : 'error');
             } catch (error) {
                 setServerStatus('error');

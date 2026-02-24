@@ -1,4 +1,4 @@
-const Alert = require('./models/Alert');
+const dbAdapter = require('./dbAdapter');
 const emailNotifier = require('./emailNotifier');
 
 class AlertEngine {
@@ -43,6 +43,23 @@ class AlertEngine {
         // Structure: { vmId: { metricType_severity: lastAlertTime } }
         this.recentAlerts = {};
         this.alertCooldown = 5 * 60 * 1000; // 5 minutes cooldown between same alerts
+
+        // Service alert state tracking for grouping
+        // Structure: { vmId: { serviceName: { firstAlertTime, lastAlertTime, emailSent, alert } } }
+        this.serviceAlertStates = {};
+        
+        // Service alert batching queue
+        // Structure: { vmId: [alerts...] }
+        this.serviceAlertQueue = {};
+        
+        // Service alert configuration
+        this.serviceAlertConfig = {
+            batchWindow: 10 * 60 * 1000,  // 10 minutes batching window
+            firstAlertImmediate: true      // Send first alert immediately
+        };
+        
+        // Start batch processing timer
+        this.startServiceAlertBatcher();
     }
 
     /**
@@ -310,15 +327,125 @@ class AlertEngine {
             triggeredAt: new Date()
         };
 
-        const alert = await Alert.save(alertData);
-        console.log(`Alert triggered: [${severity.toUpperCase()}] ${message}`);
+        const alert = await dbAdapter.saveAlert(alertData);
         
-        // Send email notification (async, don't wait)
-        emailNotifier.sendAlertNotification(alert, { vmId, hostname }).catch(err => {
-            console.error('Email notification failed:', err.message);
-        });
+        console.log(`ALERT TRIGGERED: [${severity.toUpperCase()}]`);
+        console.log(`VM:        ${hostname} (${vmId})`);
+        console.log(`Metric:    ${metricType}`);
+        console.log(`Severity:  ${severity.toUpperCase()}`);
+        console.log(`Threshold: ${thresholdValue}`);
+        console.log(`Current:   ${currentValue}`);
+        console.log(`Message:   ${message}`);
+        console.log(`Time:      ${new Date().toLocaleString()}`);
+        
+        // Check if this is a service alert
+        if (metricType.startsWith('service_')) {
+            this.handleServiceAlert(alert, vmId, hostname);
+        } else {
+            // Non-service alerts: send immediately (existing behavior)
+            emailNotifier.sendAlertNotification(alert, { vmId, hostname }).catch(err => {
+                console.error('❌ Email notification failed:', err.message);
+            });
+        }
         
         return alert;
+    }
+
+    /**
+     * Handle service alerts with grouping logic
+     */
+    handleServiceAlert(alert, vmId, hostname) {
+        // Handle both snake_case and camelCase
+        const metricType = alert.metricType || alert.metric_type;
+        if (!metricType) {
+            console.error('❌ handleServiceAlert: metricType is undefined', alert);
+            return;
+        }
+        
+        const serviceName = metricType.replace('service_', '');
+        const now = Date.now();
+        
+        // Initialize tracking structures
+        if (!this.serviceAlertStates[vmId]) {
+            this.serviceAlertStates[vmId] = {};
+        }
+        if (!this.serviceAlertQueue[vmId]) {
+            this.serviceAlertQueue[vmId] = [];
+        }
+        
+        const serviceState = this.serviceAlertStates[vmId][serviceName];
+        
+        if (!serviceState || !serviceState.emailSent) {
+            // First time this service is down - send immediate email
+            console.log(`📧 First alert for service '${serviceName}' - sending immediate email`);
+            
+            emailNotifier.sendAlertNotification(alert, { vmId, hostname }).catch(err => {
+                console.error('❌ Email notification failed:', err.message);
+            });
+            
+            // Mark as sent
+            this.serviceAlertStates[vmId][serviceName] = {
+                firstAlertTime: now,
+                lastAlertTime: now,
+                emailSent: true,
+                alert: alert
+            };
+        } else {
+            // Service already down - add to batch queue
+            console.log(`📦 Service '${serviceName}' still down - adding to batch queue`);
+            
+            // Update state
+            serviceState.lastAlertTime = now;
+            serviceState.alert = alert;
+            
+            // Add to queue if not already there
+            const existingIndex = this.serviceAlertQueue[vmId].findIndex(
+                a => (a.metricType || a.metric_type) === metricType
+            );
+            
+            if (existingIndex >= 0) {
+                // Update existing alert in queue
+                this.serviceAlertQueue[vmId][existingIndex] = alert;
+            } else {
+                // Add new alert to queue
+                this.serviceAlertQueue[vmId].push(alert);
+            }
+        }
+    }
+
+    /**
+     * Start the service alert batcher timer
+     */
+    startServiceAlertBatcher() {
+        setInterval(() => {
+            this.processBatchedServiceAlerts();
+        }, this.serviceAlertConfig.batchWindow);
+        
+        console.log(`✓ Service alert batcher started (window: ${this.serviceAlertConfig.batchWindow / 1000}s)`);
+    }
+
+    /**
+     * Process and send batched service alerts
+     */
+    async processBatchedServiceAlerts() {
+        for (const vmId in this.serviceAlertQueue) {
+            const alerts = this.serviceAlertQueue[vmId];
+            
+            if (alerts.length === 0) continue;
+            
+            console.log(`\n📦 Processing ${alerts.length} batched service alert(s) for VM: ${vmId}`);
+            
+            // Get VM hostname from first alert
+            const hostname = alerts[0].hostname;
+            
+            // Send grouped email
+            await emailNotifier.sendGroupedServiceAlerts(alerts, { vmId, hostname }).catch(err => {
+                console.error('❌ Grouped email notification failed:', err.message);
+            });
+            
+            // Clear the queue for this VM
+            this.serviceAlertQueue[vmId] = [];
+        }
     }
 
     /**

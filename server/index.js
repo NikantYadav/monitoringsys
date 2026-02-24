@@ -1,9 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { pool, initializeDatabase } = require('./db');
-const Metric = require('./models/Metric');
-const Alert = require('./models/Alert');
+const dbAdapter = require('./dbAdapter');
 const alertEngine = require('./alertEngine');
 const emailNotifier = require('./emailNotifier');
 
@@ -15,32 +13,30 @@ const io = require('socket.io')(http, {
 
 const PORT = process.env.PORT || 5000;
 
-// Initialize TimescaleDB
+// Initialize Database (TimescaleDB or InfluxDB)
 (async () => {
     try {
-        await initializeDatabase();
-        console.log('✓ TimescaleDB ready');
-        console.log('Database:', process.env.PGDATABASE || 'monitoring_sys');
+        await dbAdapter.initializeDatabase();
         console.log('✓ Alert engine initialized');
     } catch (err) {
-        console.error('✗ TimescaleDB initialization error:', err.message);
-        console.error('💡 Please check:');
-        console.error('   1. PostgreSQL/TimescaleDB is running');
-        console.error('   2. Database credentials in .env are correct');
-        console.error('   3. Database exists or user has CREATE privileges');
+        console.error('✗ Database initialization failed');
         process.exit(1);
     }
 })();
 
 // Handle process termination
 process.on('SIGINT', async () => {
-    await pool.end();
-    console.log('TimescaleDB connection pool closed');
+    await dbAdapter.close();
     process.exit(0);
 });
 
 // Middleware
-app.use(cors());
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true
+}));
 app.use(express.json());
 
 // Discovery Registry
@@ -131,27 +127,16 @@ app.get('/api/metrics/:vmId', async (req, res) => {
                 LIMIT $4;
             `;
             
-            const result = await pool.query(query, [vmId, startTime, endTime, parseInt(limit)]);
+            const result = await dbAdapter.findMetricsRange(vmId, startTime, endTime, parseInt(limit));
             
             // Transform to match expected format
-            const metrics = result.rows.map(row => ({
+            const metrics = result.map(row => ({
                 vmId: row.vmId,
                 hostname: row.hostname,
                 timestamp: row.timestamp,
-                cpu: {
-                    usage: row.cpu_usage,
-                    cores: row.cpu_cores
-                },
-                memory: {
-                    total: row.memory_total,
-                    used: row.memory_used,
-                    percent: row.memory_percent
-                },
-                disk: {
-                    total: row.disk_total,
-                    used: row.disk_used,
-                    percent: row.disk_percent
-                },
+                cpu: row.cpu,
+                memory: row.memory,
+                disk: row.disk,
                 processes: row.processes,
                 services: row.services
             }));
@@ -176,7 +161,7 @@ app.get('/api/metrics/:vmId', async (req, res) => {
 
         console.log(`📅 Searching for metrics after: ${startTime.toISOString()}`);
 
-        const metrics = await Metric.find(vmId, startTime, parseInt(limit));
+        const metrics = await dbAdapter.findMetrics(vmId, startTime, parseInt(limit));
 
         console.log(`Found ${metrics.length} historical records for ${vmId}`);
 
@@ -201,7 +186,7 @@ app.delete('/api/metrics/:vmId', async (req, res) => {
             default: cutoffDate.setDate(cutoffDate.getDate() - 30);
         }
 
-        const result = await Metric.deleteMany(vmId, cutoffDate);
+        const result = await dbAdapter.deleteMetrics(vmId, cutoffDate);
 
         res.json({ 
             success: true, 
@@ -217,7 +202,7 @@ app.delete('/api/metrics/:vmId', async (req, res) => {
 // 5. Get Storage Statistics
 app.get('/api/storage-stats', async (req, res) => {
     try {
-        const stats = await Metric.getStats();
+        const stats = await dbAdapter.getStorageStats();
         res.json(stats);
     } catch (error) {
         console.error('Error fetching storage stats:', error);
@@ -290,10 +275,10 @@ io.on('connection', (socket) => {
     // Handle agent metrics for storage
     socket.on('agent:metrics', async (data) => {
         try {
-            console.log(`Received metrics from agent ${data.vmId}`);
+            console.log(`📊 Received metrics from agent ${data.vmId}`);
             
-            // Save to TimescaleDB
-            await Metric.save(data);
+            // Save to database (TimescaleDB or InfluxDB)
+            await dbAdapter.saveMetrics(data);
             
             // Evaluate metrics for alerts
             const alerts = await alertEngine.evaluateMetrics(data);
@@ -314,20 +299,22 @@ io.on('connection', (socket) => {
                 second: '2-digit'
             });
             
-            console.log(`✓ Stored metric for ${data.vmId} at ${istTime} IST`);
+            console.log(`✓ Stored metric for ${data.vmId} at ${istTime} IST (${dbAdapter.getDatabaseType()})`);
             
             // Optionally forward to dashboard clients for real-time display
             socket.broadcast.emit('metrics:update', data);
         } catch (error) {
-            console.error('✗ Error saving to TimescaleDB:', error.message);
+            console.error(`✗ Error saving to ${dbAdapter.getDatabaseType()}:`, error.message);
             
-            // TimescaleDB specific error handling
+            // Database-specific error handling
             if (error.message.includes('authentication failed') || error.message.includes('password')) {
-                console.error('💡 Hint: Check TimescaleDB username/password in .env');
+                console.error('💡 Hint: Check database username/password in .env');
             } else if (error.message.includes('ECONNREFUSED') || error.message.includes('connect')) {
-                console.error('💡 Hint: Check if PostgreSQL/TimescaleDB is running');
+                console.error('💡 Hint: Check if database server is running');
             } else if (error.message.includes('relation') || error.message.includes('does not exist')) {
                 console.error('💡 Hint: Database schema not initialized properly');
+            } else if (error.message.includes('token')) {
+                console.error('💡 Hint: Check INFLUXDB_TOKEN in .env');
             }
         }
     });
@@ -350,26 +337,14 @@ io.on('connection', (socket) => {
 app.get('/api/vms/all', async (req, res) => {
     try {
         // Get unique VMs from database
-        const query = `
-            SELECT DISTINCT ON (vm_id)
-                vm_id,
-                hostname,
-                timestamp
-            FROM metrics
-            ORDER BY vm_id, timestamp DESC;
-        `;
+        const dbVms = await dbAdapter.getUniqueVMs();
         
-        const result = await pool.query(query);
-        
-        const dbVms = result.rows.map(row => ({
+        const allVms = dbVms.map(row => ({
             _id: row.vm_id,
             hostname: row.hostname,
             lastSeen: row.timestamp,
             source: 'database'
         }));
-        
-        // Merge with registry data
-        const allVms = [...dbVms];
         
         // Add registry VMs that might not be in database yet
         Object.values(registry).forEach(agent => {
@@ -424,7 +399,7 @@ app.get('/api/alerts/:vmId', async (req, res) => {
             options.startTime = startTime;
         }
         
-        const alerts = await Alert.find(vmId, options);
+        const alerts = await dbAdapter.findAlerts(vmId, options);
         res.json(alerts);
     } catch (error) {
         console.error('Error fetching alerts:', error);
@@ -437,7 +412,7 @@ app.get('/api/alerts/:vmId/stats', async (req, res) => {
     try {
         const { vmId } = req.params;
         const { period = '24h' } = req.query;
-        const stats = await Alert.getStats(vmId, period);
+        const stats = await dbAdapter.getAlertStats(vmId, period);
         res.json(stats);
     } catch (error) {
         console.error('Error fetching alert stats:', error);
@@ -451,7 +426,7 @@ app.delete('/api/alerts/:vmId/old', async (req, res) => {
         const { vmId } = req.params;
         const { days = 30 } = req.query;
         
-        const result = await Alert.deleteOld(vmId, parseInt(days));
+        const result = await dbAdapter.deleteOldAlerts(vmId, parseInt(days));
         res.json({ 
             success: true, 
             deletedCount: result.deletedCount,
