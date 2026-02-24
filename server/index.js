@@ -159,7 +159,7 @@ app.get('/api/metrics/:vmId', async (req, res) => {
             default: startTime.setHours(startTime.getHours() - 1);
         }
 
-        console.log(`📅 Searching for metrics after: ${startTime.toISOString()}`);
+        console.log(`Searching for metrics after: ${startTime.toISOString()}`);
 
         const metrics = await dbAdapter.findMetrics(vmId, startTime, parseInt(limit));
 
@@ -275,7 +275,7 @@ io.on('connection', (socket) => {
     // Handle agent metrics for storage
     socket.on('agent:metrics', async (data) => {
         try {
-            console.log(`📊 Received metrics from agent ${data.vmId}`);
+            console.log(`Received metrics from agent ${data.vmId}`);
             
             // Save to database (TimescaleDB or InfluxDB)
             await dbAdapter.saveMetrics(data);

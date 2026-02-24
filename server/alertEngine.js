@@ -377,10 +377,10 @@ class AlertEngine {
         
         if (!serviceState || !serviceState.emailSent) {
             // First time this service is down - send immediate email
-            console.log(`📧 First alert for service '${serviceName}' - sending immediate email`);
+            console.log(`First alert for service '${serviceName}' - sending immediate email`);
             
             emailNotifier.sendAlertNotification(alert, { vmId, hostname }).catch(err => {
-                console.error('❌ Email notification failed:', err.message);
+                console.error('Email notification failed:', err.message);
             });
             
             // Mark as sent
@@ -392,7 +392,7 @@ class AlertEngine {
             };
         } else {
             // Service already down - add to batch queue
-            console.log(`📦 Service '${serviceName}' still down - adding to batch queue`);
+            console.log(`Service '${serviceName}' still down - adding to batch queue`);
             
             // Update state
             serviceState.lastAlertTime = now;
@@ -433,14 +433,14 @@ class AlertEngine {
             
             if (alerts.length === 0) continue;
             
-            console.log(`\n📦 Processing ${alerts.length} batched service alert(s) for VM: ${vmId}`);
+            console.log(`\nProcessing ${alerts.length} batched service alert(s) for VM: ${vmId}`);
             
             // Get VM hostname from first alert
             const hostname = alerts[0].hostname;
             
             // Send grouped email
             await emailNotifier.sendGroupedServiceAlerts(alerts, { vmId, hostname }).catch(err => {
-                console.error('❌ Grouped email notification failed:', err.message);
+                console.error('Grouped email notification failed:', err.message);
             });
             
             // Clear the queue for this VM

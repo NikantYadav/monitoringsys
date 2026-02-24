@@ -18,7 +18,7 @@ class EmailNotifier {
             // Check if email configuration exists
             if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
                 console.log('\n' + '='.repeat(70));
-                console.log('📧 EMAIL NOTIFICATIONS: DISABLED');
+                console.log(' EMAIL NOTIFICATIONS: DISABLED');
                 console.log('='.repeat(70));
                 console.log('Reason: SMTP configuration not found in .env file');
                 console.log('To enable email alerts, configure these variables:');
@@ -47,7 +47,7 @@ class EmailNotifier {
             this.enabled = true;
             
             console.log('\n' + '='.repeat(70));
-            console.log('📧 EMAIL NOTIFICATIONS: ENABLED');
+            console.log('EMAIL NOTIFICATIONS: ENABLED');
             console.log('='.repeat(70));
             console.log(`SMTP Host:    ${process.env.SMTP_HOST}:${process.env.SMTP_PORT || '587'}`);
             console.log(`SMTP User:    ${process.env.SMTP_USER}`);
@@ -74,10 +74,10 @@ class EmailNotifier {
 
         try {
             await this.transporter.verify();
-            console.log('✅ SMTP connection verified successfully');
+            console.log('SMTP connection verified successfully');
             console.log('='.repeat(70) + '\n');
         } catch (error) {
-            console.log('❌ SMTP connection verification failed');
+            console.log('SMTP connection verification failed');
             console.error(`Error: ${error.message}`);
             console.log('='.repeat(70) + '\n');
             this.enabled = false;
@@ -89,12 +89,12 @@ class EmailNotifier {
      */
     async sendGroupedServiceAlerts(alerts, vmInfo = {}) {
         if (!this.enabled) {
-            console.log('📧 Email notifications disabled, skipping...');
+            console.log('Email notifications disabled, skipping...');
             return { success: false, reason: 'disabled' };
         }
 
         if (this.config.adminEmails.length === 0) {
-            console.log('📧 No admin emails configured, skipping...');
+            console.log('No admin emails configured, skipping...');
             return { success: false, reason: 'no_recipients' };
         }
 
@@ -121,25 +121,28 @@ class EmailNotifier {
             };
 
             console.log('\n' + '='.repeat(70));
-            console.log('📧 SENDING GROUPED SERVICE ALERT EMAIL');
+            console.log('SENDING GROUPED SERVICE ALERT EMAIL');
             console.log('='.repeat(70));
             console.log(`From:     ${this.config.fromName} <${this.config.from}>`);
             console.log(`To:       ${this.config.adminEmails.join(', ')}`);
             console.log(`Subject:  ${subject}`);
-            console.log(`Services: ${alerts.map(a => a.metricType.replace('service_', '')).join(', ')}`);
+            console.log(`Services: ${alerts.map(a => {
+                const metricType = a.metricType || a.metric_type;
+                return metricType ? metricType.replace('service_', '') : 'unknown';
+            }).join(', ')}`);
             console.log(`VM:       ${hostname} (${vmId})`);
             console.log('-'.repeat(70));
 
             const info = await this.transporter.sendMail(mailOptions);
             
-            console.log(`✅ GROUPED EMAIL SENT SUCCESSFULLY`);
+            console.log(`GROUPED EMAIL SENT SUCCESSFULLY`);
             console.log(`Message ID: ${info.messageId}`);
             console.log(`Response:   ${info.response || 'OK'}`);
             console.log('='.repeat(70) + '\n');
             
             return { success: true, messageId: info.messageId };
         } catch (error) {
-            console.log('❌ GROUPED EMAIL SEND FAILED');
+            console.log('GROUPED EMAIL SEND FAILED');
             console.error(`Error: ${error.message}`);
             console.error(`Stack: ${error.stack}`);
             console.log('='.repeat(70) + '\n');
@@ -156,7 +159,8 @@ class EmailNotifier {
         const serviceCount = alerts.length;
         
         const serviceRows = alerts.map(alert => {
-            const serviceName = alert.metricType.replace('service_', '');
+            const metricType = alert.metricType || alert.metric_type;
+            const serviceName = metricType ? metricType.replace('service_', '') : 'unknown';
             const downTime = this.formatDowntime(alert.triggered_at);
             
             return `
@@ -234,7 +238,8 @@ class EmailNotifier {
         const serviceCount = alerts.length;
         
         const serviceList = alerts.map(alert => {
-            const serviceName = alert.metricType.replace('service_', '');
+            const metricType = alert.metricType || alert.metric_type;
+            const serviceName = metricType ? metricType.replace('service_', '') : 'unknown';
             const downTime = this.formatDowntime(alert.triggered_at);
             return `  - ${serviceName} (${downTime})\n    ${alert.message}`;
         }).join('\n\n');
@@ -284,12 +289,12 @@ This is an automated grouped alert from your System Monitor
      */
     async sendAlertNotification(alert, vmInfo = {}) {
         if (!this.enabled) {
-            console.log('📧 Email notifications disabled, skipping...');
+            console.log('Email notifications disabled, skipping...');
             return { success: false, reason: 'disabled' };
         }
 
         if (this.config.adminEmails.length === 0) {
-            console.log('📧 No admin emails configured, skipping...');
+            console.log('No admin emails configured, skipping...');
             return { success: false, reason: 'no_recipients' };
         }
 
@@ -320,14 +325,14 @@ This is an automated grouped alert from your System Monitor
 
             const info = await this.transporter.sendMail(mailOptions);
             
-            console.log(`✅ EMAIL SENT SUCCESSFULLY`);
+            console.log(`EMAIL SENT SUCCESSFULLY`);
             console.log(`Message ID: ${info.messageId}`);
             console.log(`Response:   ${info.response || 'OK'}`);
             console.log('='.repeat(70) + '\n');
             
             return { success: true, messageId: info.messageId };
         } catch (error) {
-            console.log('❌ EMAIL SEND FAILED');
+            console.log('EMAIL SEND FAILED');
             console.error(`Error: ${error.message}`);
             console.error(`Stack: ${error.stack}`);
             console.log('='.repeat(70) + '\n');
